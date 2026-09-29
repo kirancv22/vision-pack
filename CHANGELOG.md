@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Nightly packaging installs `gh` and `ca-certificates` in the Ubuntu
   container, grants `contents: write`, and publishes the prerelease with
   `GH_REPO` plus `--target` so `gh` does not need a local git checkout.
+- Runtime packages no longer ship other components' empty directories, so
+  installing only `amdrocm-roccv` does not make `import amd.rocal` succeed.
+- Package version derivation matches only release tags (`v1.2.3` / `1.2.3`),
+  so a `nightly-YYYYMMDD` prerelease tag no longer yields a non-numeric version
+  (e.g. `nightly-20260926-3-gSHA`) that CPack rejects.
 
 ## [0.2.0] — 2026-09-24
 
