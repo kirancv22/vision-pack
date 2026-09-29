@@ -25,7 +25,7 @@ expected_contents() {
     amdrocm-mivisionx)          echo 'lib/libopenvx\.so lib/libvxu\.so lib/libvx_rpp\.so bin/runvx' ;;
     amdrocm-mivisionx-devel)    echo 'include/mivisionx/ lib/cmake/FindMIVisionX\.cmake' ;;
     amdrocm-mivisionx-test)     echo 'share/mivisionx/test/' ;;
-    amdrocm-rocal)              echo 'lib/librocal\.so lib/rocal_pybind.*\.so' ;;
+    amdrocm-rocal)              echo 'lib/librocal\.so lib/rocal_pybind.*\.so share/doc/amdrocm-rocal/licenses/pybind11/ share/doc/amdrocm-rocal/licenses/dlpack/ share/doc/amdrocm-rocal/licenses/rapidjson/' ;;
     amdrocm-rocal-devel)        echo 'include/rocal/ lib/cmake/Findrocal\.cmake' ;;
     amdrocm-rocal-test)         echo 'share/rocal/test/' ;;
     amdrocm-roccv)              echo 'lib/libroccv\.so lib/rocpycv.*\.so' ;;
@@ -33,7 +33,7 @@ expected_contents() {
     amdrocm-roccv-test)         echo 'share/roccv/test/' ;;
     amdrocm-pydecode)           echo 'lib/rocpydecode.*\.so lib/rocpyjpegdecode.*\.so lib/pyRocVideoDecode/ lib/pyRocJpegDecode/' ;;
     amdrocm-pydecode-test)      echo 'share/rocpydecode/tests/ share/rocpyjpegdecode/tests/' ;;
-    amdrocm-vision-sysdeps)     echo 'libturbojpeg-rocm-vision\.so libjpeg-rocm-vision\.so libprotobuf-rocm-vision\.so liblmdb-rocm-vision\.so libsndfile-rocm-vision\.so' ;;
+    amdrocm-vision-sysdeps)     echo 'libturbojpeg-rocm-vision\.so libjpeg-rocm-vision\.so libprotobuf-rocm-vision\.so liblmdb-rocm-vision\.so libsndfile-rocm-vision\.so share/doc/amdrocm-vision-sysdeps/licenses/protobuf/ share/doc/amdrocm-vision-sysdeps/licenses/libjpeg-turbo/ share/doc/amdrocm-vision-sysdeps/licenses/lmdb/ share/doc/amdrocm-vision-sysdeps/licenses/libsndfile/' ;;
     amdrocm-vision-pythonpath)  echo 'dist-packages/amdrocm-vision\.pth' ;;
     *)                          echo '' ;;
   esac

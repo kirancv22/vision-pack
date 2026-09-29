@@ -278,3 +278,45 @@ endif()
 # Expose staging prefix for top-level CMakeLists → rocAL cmake args
 set(VP_BUNDLED_DEPS_STAGE "${_vp_sysdeps_stage}"
     CACHE PATH "Staging prefix for bundled runtime deps" FORCE)
+
+# ---------------------------------------------------------------------------
+# Bundled-dependency licenses. Every third-party project we build ships its
+# code in an artifact, so its license must ship too. The package job checks out
+# no submodules, so the license files (which live in the submodule source) are
+# not available at CPack time — stage them into the artifact HERE, as part of
+# the `runtime` component, then packaging/ ships each one in the package that
+# carries that dep's code:
+#   compiled runtime .so's (protobuf/turbojpeg/lmdb/libsndfile) → amdrocm-vision-sysdeps
+#   header-only, compiled into rocAL (pybind11/dlpack/rapidjson) → amdrocm-rocal
+# Each install is guarded by the same BUNDLE flag as its build above, so a
+# distro build linking system copies ships no bundled license it didn't build.
+set(_vp_sysdeps_licdir "share/doc/amdrocm-vision-sysdeps/licenses")
+set(_vp_rocal_licdir   "share/doc/amdrocm-rocal/licenses")
+if(VISION_PACK_BUNDLE_PROTOBUF)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/protobuf/LICENSE"
+    DESTINATION "${_vp_sysdeps_licdir}/protobuf" COMPONENT runtime)
+endif()
+if(VISION_PACK_BUNDLE_TURBOJPEG)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/libjpeg-turbo/LICENSE.md"
+    DESTINATION "${_vp_sysdeps_licdir}/libjpeg-turbo" COMPONENT runtime)
+endif()
+if(VISION_PACK_BUNDLE_LMDB)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/lmdb/libraries/liblmdb/LICENSE"
+    DESTINATION "${_vp_sysdeps_licdir}/lmdb" COMPONENT runtime)
+endif()
+if(VISION_PACK_BUNDLE_LIBSNDFILE)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/libsndfile/COPYING"
+    DESTINATION "${_vp_sysdeps_licdir}/libsndfile" COMPONENT runtime)
+endif()
+if(VISION_PACK_BUNDLE_PYBIND11)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pybind11/LICENSE"
+    DESTINATION "${_vp_rocal_licdir}/pybind11" COMPONENT runtime)
+endif()
+if(VISION_PACK_BUNDLE_DLPACK)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/dlpack/LICENSE"
+    DESTINATION "${_vp_rocal_licdir}/dlpack" COMPONENT runtime)
+endif()
+if(VISION_PACK_BUNDLE_RAPIDJSON)
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/rapidjson/license.txt"
+    DESTINATION "${_vp_rocal_licdir}/rapidjson" COMPONENT runtime)
+endif()

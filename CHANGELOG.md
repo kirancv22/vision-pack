@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a `nightly-YYYYMMDD` prerelease tag no longer yields a non-numeric version
   (e.g. `nightly-20260926-3-gSHA`) that CPack rejects.
 
+### Added
+- Bundled third-party dependencies now ship their license files. The runtime
+  deps (protobuf, libjpeg-turbo, lmdb, libsndfile) carry their licenses in
+  `amdrocm-vision-sysdeps`; the header-only deps compiled into rocAL (pybind11,
+  dlpack, rapidjson) carry theirs in `amdrocm-rocal`, under
+  `share/doc/<pkg>/licenses/<dep>/`. `validate_packages.sh` fails if any is missing.
+
 ## [0.2.0] — 2026-09-24
 
 Packaging and CI cleanup. The product is DEB/RPM plus the dist tarball;
