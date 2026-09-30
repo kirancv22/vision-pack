@@ -25,7 +25,7 @@ expected_contents() {
     amdrocm-mivisionx)          echo 'lib/libopenvx\.so lib/libvxu\.so lib/libvx_rpp\.so bin/runvx' ;;
     amdrocm-mivisionx-devel)    echo 'include/mivisionx/ lib/cmake/FindMIVisionX\.cmake' ;;
     amdrocm-mivisionx-test)     echo 'share/mivisionx/test/' ;;
-    amdrocm-rocal)              echo 'lib/librocal\.so lib/rocal_pybind.*\.so share/doc/amdrocm-rocal/licenses/pybind11/ share/doc/amdrocm-rocal/licenses/dlpack/ share/doc/amdrocm-rocal/licenses/rapidjson/' ;;
+    amdrocm-rocal)              echo 'lib/librocal\.so lib/rocal_pybind.*\.so' ;;
     amdrocm-rocal-devel)        echo 'include/rocal/ lib/cmake/Findrocal\.cmake' ;;
     amdrocm-rocal-test)         echo 'share/rocal/test/' ;;
     amdrocm-roccv)              echo 'lib/libroccv\.so lib/rocpycv.*\.so' ;;
@@ -33,7 +33,7 @@ expected_contents() {
     amdrocm-roccv-test)         echo 'share/roccv/test/' ;;
     amdrocm-pydecode)           echo 'lib/rocpydecode.*\.so lib/rocpyjpegdecode.*\.so lib/pyRocVideoDecode/ lib/pyRocJpegDecode/' ;;
     amdrocm-pydecode-test)      echo 'share/rocpydecode/tests/ share/rocpyjpegdecode/tests/' ;;
-    amdrocm-vision-sysdeps)     echo 'libturbojpeg-rocm-vision\.so libjpeg-rocm-vision\.so libprotobuf-rocm-vision\.so liblmdb-rocm-vision\.so libsndfile-rocm-vision\.so share/doc/amdrocm-vision-sysdeps/licenses/protobuf/ share/doc/amdrocm-vision-sysdeps/licenses/libjpeg-turbo/ share/doc/amdrocm-vision-sysdeps/licenses/lmdb/ share/doc/amdrocm-vision-sysdeps/licenses/libsndfile/' ;;
+    amdrocm-vision-sysdeps)     echo 'libturbojpeg-rocm-vision\.so libjpeg-rocm-vision\.so libprotobuf-rocm-vision\.so liblmdb-rocm-vision\.so libsndfile-rocm-vision\.so' ;;
     amdrocm-vision-pythonpath)  echo 'dist-packages/amdrocm-vision\.pth' ;;
     *)                          echo '' ;;
   esac
@@ -163,6 +163,43 @@ check_package() {
       fi
     done
   fi
+
+  # --- bundled-dependency licenses ------------------------------------------
+  # A bundled dep must ship its license. Enforce this only from evidence that
+  # the dep was actually bundled, so a distro build against system copies
+  # (VISION_PACK_BUNDLE_*=OFF) is not wrongly rejected:
+  #   sysdeps  — key off each renamed runtime .so that shipped.
+  #   rocAL    — header-only deps leave no file, so key off the licenses/ dir:
+  #              if it shipped it must be complete; if absent (system copies),
+  #              skip.
+  local dep so lic
+  case "$pkg" in
+    amdrocm-vision-sysdeps)
+      for dep in "libprotobuf-rocm-vision:protobuf" \
+                 "libturbojpeg-rocm-vision:libjpeg-turbo" \
+                 "liblmdb-rocm-vision:lmdb" \
+                 "libsndfile-rocm-vision:libsndfile"; do
+        so="${dep%%:*}"; lic="${dep##*:}"
+        echo "$paths" | grep -qE "${so}\.so" || continue
+        if echo "$paths" | grep -qE "share/doc/amdrocm-vision-sysdeps/licenses/${lic}/"; then
+          echo "  license for ${lic}: OK"
+        else
+          echo "  ERROR: ${pkg} ships ${so} but no license for ${lic}"; fail=1
+        fi
+      done
+      ;;
+    amdrocm-rocal)
+      if echo "$paths" | grep -qE "share/doc/amdrocm-rocal/licenses/"; then
+        for lic in pybind11 dlpack rapidjson; do
+          if echo "$paths" | grep -qE "share/doc/amdrocm-rocal/licenses/${lic}/"; then
+            echo "  license for ${lic}: OK"
+          else
+            echo "  ERROR: ${pkg} ships bundled-dep licenses but not ${lic}"; fail=1
+          fi
+        done
+      fi
+      ;;
+  esac
 
   # --- empty directories (#55) ----------------------------------------------
   # A directory with no file under it belongs to another component. Shipping

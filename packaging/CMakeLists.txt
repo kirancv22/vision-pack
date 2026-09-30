@@ -160,7 +160,7 @@ install(FILES "${VISION_PACK_STAGING_DIR}/share/doc/rocal/LICENSE.txt"
 # Licenses of the bundled header-only deps compiled into rocAL (staged by
 # third-party/): pybind11, dlpack, rapidjson.
 install(DIRECTORY "${VISION_PACK_STAGING_DIR}/share/doc/amdrocm-rocal/licenses"
-    DESTINATION share/doc/amdrocm-rocal COMPONENT rocal
+    DESTINATION share/doc/amdrocm-rocal COMPONENT rocal OPTIONAL
 )
 # --- rocAL dev: include/rocal/ ---
 install(DIRECTORY "${VISION_PACK_STAGING_DIR}/include/rocal"
@@ -239,7 +239,7 @@ vision_pack_install_matched(rocm-sysdeps-vision lib/rocm_sysdeps/lib
 )
 # Licenses of the bundled deps shipped in this package (staged by third-party/).
 install(DIRECTORY "${VISION_PACK_STAGING_DIR}/share/doc/amdrocm-vision-sysdeps/licenses"
-    DESTINATION share/doc/amdrocm-vision-sysdeps COMPONENT rocm-sysdeps-vision
+    DESTINATION share/doc/amdrocm-vision-sysdeps COMPONENT rocm-sysdeps-vision OPTIONAL
 )
 
 # --- Python path registration (.pth) → host site-packages (#4) ---
