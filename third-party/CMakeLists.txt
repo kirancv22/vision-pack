@@ -214,6 +214,15 @@ endif()
 # (no LIBVER/ABIVER/VERSION_OPT), so rewrite_sonames.py would have nothing
 # to key its isolation rename on. LDFLAGS embeds one explicitly, matching
 # Ubuntu's own liblmdb.so.0.
+#
+# LDFLAGS also carries -pthread: the 0.9.x Makefile has no default LDFLAGS
+# of its own (1.0.x's does: `LDFLAGS = $(THREADS)`), and its generic tool
+# rule (`%: %.o`) links mdb_stat/mdb_copy/mdb_dump/mdb_load using only
+# $(CFLAGS)/$(LDFLAGS) -- with our CFLAGS override above dropping the
+# Makefile's own -pthread, those tools fail with "undefined reference to
+# pthread_*" on toolchains where pthread isn't merged into libc (glibc
+# < 2.34, e.g. the CI build image). liblmdb.so itself is unaffected since
+# its own recipe hardcodes -pthread directly.
 # ---------------------------------------------------------------------------
 if(VISION_PACK_BUNDLE_LMDB)
   set(_lmdb_stage "${_vp_sysdeps_stage}")
@@ -226,7 +235,7 @@ if(VISION_PACK_BUNDLE_LMDB)
       make -C "${CMAKE_CURRENT_SOURCE_DIR}/lmdb/libraries/liblmdb"
         "prefix=<INSTALL_DIR>"
         "CFLAGS=-O2 -fPIC"
-        "LDFLAGS=-Wl,-soname,liblmdb.so.0"
+        "LDFLAGS=-pthread -Wl,-soname,liblmdb.so.0"
     INSTALL_COMMAND
       make -C "${CMAKE_CURRENT_SOURCE_DIR}/lmdb/libraries/liblmdb"
         "prefix=<INSTALL_DIR>"
