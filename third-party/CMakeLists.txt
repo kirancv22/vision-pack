@@ -201,9 +201,19 @@ elseif(VISION_PACK_ENABLE_ROCAL)
 endif()
 
 # ---------------------------------------------------------------------------
-# LMDB 1.0.1  → lib/rocm_sysdeps/lib/liblmdb.so
+# LMDB 0.9.31  → lib/rocm_sysdeps/lib/liblmdb.so
 # LMDB has no CMakeLists; built via its Makefile.
 # Source lives in libraries/liblmdb/ inside the repo.
+#
+# Pinned to 0.9.x (Ubuntu's shipped liblmdb0 version) instead of the 1.0
+# series: LMDB 1.0 changed the on-disk format (MDB_DATA_VERSION 3 vs 1) in a
+# way upstream documents as permanently incompatible with 0.9 databases, and
+# rocAL's Caffe/Caffe2 LMDB readers only ever consume 0.9-format DBs (#58).
+#
+# The 0.9.x Makefile, unlike 1.0.x, does not embed a SONAME on liblmdb.so
+# (no LIBVER/ABIVER/VERSION_OPT), so rewrite_sonames.py would have nothing
+# to key its isolation rename on. LDFLAGS embeds one explicitly, matching
+# Ubuntu's own liblmdb.so.0.
 # ---------------------------------------------------------------------------
 if(VISION_PACK_BUNDLE_LMDB)
   set(_lmdb_stage "${_vp_sysdeps_stage}")
@@ -216,6 +226,7 @@ if(VISION_PACK_BUNDLE_LMDB)
       make -C "${CMAKE_CURRENT_SOURCE_DIR}/lmdb/libraries/liblmdb"
         "prefix=<INSTALL_DIR>"
         "CFLAGS=-O2 -fPIC"
+        "LDFLAGS=-Wl,-soname,liblmdb.so.0"
     INSTALL_COMMAND
       make -C "${CMAKE_CURRENT_SOURCE_DIR}/lmdb/libraries/liblmdb"
         "prefix=<INSTALL_DIR>"
@@ -228,7 +239,7 @@ if(VISION_PACK_BUNDLE_LMDB)
     COMPONENT runtime
     FILES_MATCHING PATTERN "liblmdb.so*"
   )
-  message(STATUS "[vision-pack] LMDB 1.0.1 → ${VP_SYSDEPS_LIBDIR}")
+  message(STATUS "[vision-pack] LMDB 0.9.31 → ${VP_SYSDEPS_LIBDIR}")
 elseif(VISION_PACK_ENABLE_ROCAL)
   find_library(LMDB_LIBRARIES NAMES lmdb)
   find_path(LMDB_INCLUDE_DIRS NAMES lmdb.h)
