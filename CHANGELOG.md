@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Package version derivation matches only release tags (`v1.2.3` / `1.2.3`),
   so a `nightly-YYYYMMDD` prerelease tag no longer yields a non-numeric version
   (e.g. `nightly-20260926-3-gSHA`) that CPack rejects.
+- `amdrocm-vision-sysdeps` now declares the versioned-symbol `Provides` that
+  `rpm`'s dependency generator could not derive from the SONAME-isolated
+  `libturbojpeg`/`libsndfile`, so `amdrocm-rocal` installs from the RPM set
+  without `--nodeps` (#61).
 
 ## [0.2.0] — 2026-09-24
 
