@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(vision-pack
-  VERSION 0.1.0
+  VERSION 0.2.0
   LANGUAGES C CXX
   DESCRIPTION "AMD ROCm Computer Vision package aggregator")
 
@@ -19,8 +19,10 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 if(NOT DEFINED ROCM_PATH)
   set(ROCM_PATH "/opt/rocm" CACHE PATH "Path to the ROCm SDK installation")
 endif()
-# CMAKE_INSTALL_PREFIX defaults to ROCM_PATH so `cmake --install` drops
-# everything directly into the ROCm tree — no new top-level dirs.
+# CMAKE_INSTALL_PREFIX defaults to ROCM_PATH. The top-level install() rules
+# only cover bundled runtime deps and finder shims. Vision libraries live in
+# per-project stage dirs and are copied into staging by CI before CPack —
+# `cmake --install` on this project does not assemble the full /opt/rocm tree.
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
   set(CMAKE_INSTALL_PREFIX "${ROCM_PATH}" CACHE PATH "" FORCE)
 endif()
@@ -32,9 +34,11 @@ message(STATUS "[vision-pack] Install prefix:    ${CMAKE_INSTALL_PREFIX}")
 # $ORIGIN/../lib/rocm_sysdeps/lib  finds our bundled deps AND existing ROCm
 #   sysdeps (zlib, bzip2, liblzma etc.) — no new directory, already exists.
 # $ORIGIN                          finds sibling libs (libopenvx → libvx_rpp).
+# $ORIGIN/llvm/lib                 finds libomp.so; rocAL links OpenMP, so
+#   librocal.so carries a NEEDED on it and aborts at load without this (#43).
 # ---------------------------------------------------------------------------
 set(VP_INSTALL_RPATH
-    "$ORIGIN:$ORIGIN/../lib/rocm_sysdeps/lib"
+    "$ORIGIN:$ORIGIN/../lib/rocm_sysdeps/lib:$ORIGIN/llvm/lib"
     CACHE STRING "RPATH baked into all vision .so files")
 
 # ---------------------------------------------------------------------------
@@ -85,7 +89,9 @@ if(VISION_PACK_ENABLE_MIVISIONX)
       # Install into ROCM_PATH (same as any ROCm lib):
       #   lib/libopenvx.so, include/mivisionx/, lib/cmake/mivisionx/, etc.
       "-DCMAKE_INSTALL_RPATH=${VP_INSTALL_RPATH}"
-      -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON
+      # USE_LINK_PATH appends absolute link-time directories that name the
+      # build host's ROCM_PATH and resolve nowhere on the target.
+      -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF
   )
 endif()
 
@@ -96,7 +102,7 @@ if(VISION_PACK_ENABLE_ROCCV)
     CMAKE_ARGS
       -DBUILD_PYPACKAGE=ON
       "-DCMAKE_INSTALL_RPATH=${VP_INSTALL_RPATH}"
-      -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON
+      -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF
       # Forward Python3_ROOT_DIR if set (e.g. to /opt/python-shared/cp312-cp312
       # in manylinux where the static /opt/python build lacks libpython.so)
       $<$<BOOL:${Python3_ROOT_DIR}>:-DPython3_ROOT_DIR=${Python3_ROOT_DIR}>
@@ -107,7 +113,23 @@ endif()
 # rocpydecode hardcodes ${ROCM_PATH}/share/rocdecode/utils for utility sources,
 # which the dcgpu-tests SDK tarball provides directly under ROCM_PATH.
 if(VISION_PACK_ENABLE_ROCPYDECODE)
-  set(_rocpydecode_cmake_args "-DROCM_PATH=${ROCM_PATH}")
+  # Force lib/ (not lib64/). rocpydecode's videoDecode/jpegDecode use
+  # GNUInstallDirs, which defaults CMAKE_INSTALL_LIBDIR to lib64 on the RHEL-
+  # based manylinux image — so rocpydecode.*.so + rocpyjpegdecode.*.so land in
+  # build/staging/lib64/, off the vision-pack lib/ layout (the .pth, the
+  # packaging tree, and the import smoke test's PYTHONPATH all use lib/). rocCV
+  # and rocAL already pin lib in their own CMakeLists; rocpydecode does not, so
+  # pin it here to match — otherwise `import rocpyjpegdecode` is never found.
+  set(_rocpydecode_cmake_args
+    "-DROCM_PATH=${ROCM_PATH}"
+    "-DCMAKE_INSTALL_LIBDIR=lib"
+    # Install share/rocpydecode/tests so amdrocm-pydecode-test has a payload.
+    "-DBUILD_TESTING=ON"
+    # Same relative RPATH as the other vision libs (#45). USE_LINK_PATH stays
+    # OFF: it appends absolute link-time directories that name the build host's
+    # ROCM_PATH and resolve nowhere on the target.
+    "-DCMAKE_INSTALL_RPATH=${VP_INSTALL_RPATH}"
+    -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF)
   # rocpydecode calls find_package(Python3 ... Development) which needs
   # libpython3.x.so. Forward Python3_ROOT_DIR if set (e.g. to
   # /opt/python-shared in manylinux where the default Python is static).
@@ -161,7 +183,7 @@ if(VISION_PACK_ENABLE_ROCAL)
     -DCMAKE_DISABLE_FIND_PACKAGE_FFmpeg=ON
     -DCMAKE_DISABLE_FIND_PACKAGE_LibTar=ON
     "-DCMAKE_INSTALL_RPATH=${VP_INSTALL_RPATH}"
-    -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON
+    -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF
     # rocAL_pybind does find_package(Python3 COMPONENTS Interpreter Development),
     # which needs libpython.so. manylinux's default static /opt/python lacks it,
     # so forward the shared Python (same as rocCV/rocpydecode) or rocal_pybind is
@@ -262,3 +284,13 @@ endif()
 
 # Wire up all declared subprojects
 vision_pack_subproject_activate()
+
+# Finder shims: upstream MIVisionX/rocAL ship no Config.cmake (MIVisionX#1761,
+# rocAL#514). Install into staging so the dist tarball and a prefix install
+# both get them; CPack also installs the same files into the -devel packages.
+install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/shims/FindMIVisionX.cmake"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/shims/Findrocal.cmake"
+  DESTINATION lib/cmake
+  COMPONENT runtime
+)

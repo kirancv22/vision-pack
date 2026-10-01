@@ -1,7 +1,7 @@
 # vision-pack packaging workflow
 #
 # Consumes staged artifacts from build.yml and produces:
-#   - DEB packages  (amdrocm-mivisionx, -rocal, -roccv, -rocpydecode + variants)
+#   - DEB packages  (amdrocm-mivisionx, -rocal, -roccv, -pydecode + variants)
 #   - RPM packages  (same naming)
 #   - Tarball       (vision-pack-dist-linux-multiarch-<version>.tar.gz)
 #   - Meta-packages (amdrocm-vision, amdrocm-vision-sdk, amdrocm-vision-tests)
@@ -34,6 +34,16 @@ on:
         type: string
         required: false
         default: ''
+    outputs:
+      version:
+        description: 'Package version string'
+        value: ${{ jobs.package.outputs.version }}
+      build_id:
+        description: 'CI build ID / nightly date'
+        value: ${{ jobs.package.outputs.build_id }}
+      tarball_artifact:
+        description: 'Uploaded dist-tarball artifact name'
+        value: ${{ jobs.package.outputs.tarball_artifact }}
   workflow_dispatch:
     inputs:
       artifact_name:
@@ -65,6 +75,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       build_id: ${{ steps.version.outputs.build_id }}
+      tarball_artifact: ${{ steps.version.outputs.tarball_artifact }}
 
     steps:
       - uses: actions/checkout@v7
@@ -72,15 +83,36 @@ jobs:
       - name: Install packaging tools
         run: |
           apt-get update -qq
+          # gh is not in the ubuntu:24.04 image; the nightly prerelease step
+          # needs it (hosted runners have it, this container job does not).
+          # --no-install-recommends skips ca-certificates, and without that
+          # bundle gh rejects api.github.com (x509: unknown authority).
           apt-get install -y --no-install-recommends \
+            ca-certificates \
             cmake dpkg-dev debhelper equivs rpm createrepo-c \
-            patchelf python3 curl jq git
+            patchelf python3 curl jq git gh
+          # This job also runs as root against a checkout owned by the runner
+          # user; without this git refuses to read the repository and the
+          # version lookup below can never resolve a tag.
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
 
       - name: Download staged artifacts
         uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.artifact_name }}
-          path: staging/
+          path: staging-archive/
+
+      # build.yml uploads the staging tree as a tarball so the artifact
+      # round-trip preserves symlinks and exec bits (#43, #44). Unpack it here
+      # and everything downstream — CPack and the dist tarball — sees the tree
+      # exactly as it was staged.
+      - name: Unpack staged tree
+        run: |
+          mkdir -p staging
+          tar -xzf staging-archive/vision-pack-staging.tar.gz -C staging
+          echo "runvx: $(stat -c '%a %n' staging/bin/runvx 2>/dev/null || echo absent)"
+          echo "libvx_rpp chain:"
+          ls -l staging/lib/libvx_rpp.so* 2>/dev/null || true
 
       - name: Show staging layout
         run: |
@@ -102,9 +134,11 @@ jobs:
           if [ -n "${{ inputs.package_version }}" ]; then
             VER="${{ inputs.package_version }}"
           else
-            VER=$(git describe --tags --abbrev=0 2>/dev/null \
+            # --match excludes nightly-YYYYMMDD prerelease tags, which are not
+            # valid Debian/RPM versions; fall back to the manifest, then 0.2.0.
+            VER=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --match '[0-9]*' 2>/dev/null \
               || jq -r '.version // empty' staging/share/vision-pack/vision-pack-manifest.json 2>/dev/null \
-              || echo "0.1.0")
+              || echo "0.2.0")
             VER="${VER#v}"
           fi
           # Build ID: use run_id for CI, date for nightly
@@ -115,6 +149,7 @@ jobs:
           fi
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
           echo "build_id=${BUILD_ID}" >> "$GITHUB_OUTPUT"
+          echo "tarball_artifact=vision-pack-tarball-${VER}-${BUILD_ID}" >> "$GITHUB_OUTPUT"
           echo "Package: ${VER}  Build: ${BUILD_ID}  Type: ${{ inputs.release_type }}"
 
       - name: Configure CPack
@@ -138,12 +173,129 @@ jobs:
         run: |
           cpack -G DEB --verbose
           ls -lh *.deb 2>/dev/null || echo "No .deb files produced"
+          # The rocpydecode modules install to lib/ (CMAKE_INSTALL_LIBDIR=lib);
+          # the packaging globs read from staging/lib/, so a regression that put
+          # them back in lib64/ would silently ship an empty amdrocm-pydecode.
+          echo "=== amdrocm-pydecode contents ==="
+          PYDECODE_DEB=$(ls amdrocm-*-rocpydecode.deb 2>/dev/null | head -1)
+          if [ -z "${PYDECODE_DEB}" ]; then
+            echo "ERROR: no rocpydecode .deb produced"
+            exit 1
+          fi
+          CONTENTS=$(dpkg-deb -c "${PYDECODE_DEB}" 2>/dev/null || true)
+          echo "${CONTENTS}" | grep -E 'lib/(rocpydecode|rocpyjpegdecode).*\.so' || true
+          FAIL=0
+          for MOD in rocpydecode rocpyjpegdecode; do
+            if echo "${CONTENTS}" | grep -qE "lib/${MOD}.*\.so"; then
+              echo "  ${MOD} .so packaged: OK"
+            else
+              echo "  ERROR: ${MOD} .so missing from ${PYDECODE_DEB}"
+              FAIL=1
+            fi
+          done
+          [ "${FAIL}" -eq 0 ] || exit 1
+
+      - name: Inspect DEB metadata and payload
+        working-directory: pkg-build
+        run: |
+          set -u
+          FAIL=0
+          for DEB in *.deb; do
+            [ -f "${DEB}" ] || continue
+            echo "=================================================================="
+            echo "### ${DEB}"
+            echo "--- control (dpkg-deb --info) ---"
+            dpkg-deb --field "${DEB}" \
+              Package Version Architecture Section Priority Installed-Size \
+              Maintainer Homepage Depends
+            echo "--- payload (dpkg-deb --contents) ---"
+            CONTENTS="$(dpkg-deb --contents "${DEB}")"
+            echo "${CONTENTS}" | awk 'NF>=6 && $1 !~ /^d/ {print}' | head -25
+            FILES="$(echo "${CONTENTS}" | awk '$1 !~ /^d/' | wc -l)"
+            LINKS="$(echo "${CONTENTS}" | awk '$1 ~ /^l/' | wc -l)"
+            echo "--- summary: ${FILES} file(s), ${LINKS} symlink(s) ---"
+
+            PKG="$(dpkg-deb --field "${DEB}" Package)"
+            if [ "${FILES}" -eq 0 ]; then
+              echo "  ERROR: ${PKG} contains no files"
+              FAIL=1
+            fi
+            VER="$(dpkg-deb --field "${DEB}" Version)"
+            # Every payload path must live under /opt/rocm. The one exception is
+            # the .pth, which only works from a real site directory.
+            # Field 6 is the path; $NF would be the link target on symlink lines.
+            STRAY="$(echo "${CONTENTS}" | awk '$1 !~ /^d/ {print $6}' \
+              | grep -v '^\./opt/rocm/' \
+              | grep -v '^\./usr/lib/python3/dist-packages/' || true)"
+            if [ -n "${STRAY}" ]; then
+              echo "  ERROR: ${PKG} ships paths outside /opt/rocm:"
+              echo "${STRAY}" | sed 's/^/    /'
+              FAIL=1
+            fi
+            # A Debian version must begin with a digit. Warn rather than fail:
+            # the version is supplied by the caller, so this is a guard against
+            # a bad value reaching the packages, not a build-local invariant.
+            case "${VER}" in
+              [0-9]*) ;;
+              *) echo "::warning::${PKG} version '${VER}' does not start with a digit; dependency expressions referencing it cannot be satisfied" ;;
+            esac
+          done
+
+          echo "=================================================================="
+          echo "### declared dependency graph"
+          for DEB in *.deb; do
+            [ -f "${DEB}" ] || continue
+            printf '%-34s -> %s\n' \
+              "$(dpkg-deb --field "${DEB}" Package)" \
+              "$(dpkg-deb --field "${DEB}" Depends)"
+          done
+
+          # amdrocm-rocal links libopenvx/libvx_rpp, so it must pull MIVisionX in.
+          ROCAL_DEB=""
+          for d in *.deb; do
+            if [ "$(dpkg-deb --field "$d" Package)" = "amdrocm-rocal" ]; then
+              ROCAL_DEB="$d"
+              break
+            fi
+          done
+          if [ -n "${ROCAL_DEB:-}" ]; then
+            DEPS="$(dpkg-deb --field "${ROCAL_DEB}" Depends)"
+            for REQ in amdrocm-mivisionx amdrocm-vision-sysdeps amdrocm-vision-pythonpath; do
+              if echo "${DEPS}" | grep -q "${REQ}"; then
+                echo "  amdrocm-rocal depends on ${REQ}: OK"
+              else
+                echo "  ERROR: amdrocm-rocal is missing a dependency on ${REQ}"
+                FAIL=1
+              fi
+            done
+          else
+            echo "::warning::amdrocm-rocal .deb not found; dependency check skipped"
+          fi
+          [ "${FAIL}" -eq 0 ] || { echo "DEB inspection failed"; exit 1; }
 
       - name: Generate RPM packages
         working-directory: pkg-build
         run: |
           cpack -G RPM --verbose
           ls -lh *.rpm 2>/dev/null || echo "No .rpm files produced"
+
+      - name: Inspect RPM metadata and payload
+        working-directory: pkg-build
+        run: |
+          set -u
+          command -v rpm >/dev/null 2>&1 || { echo "rpm not available"; exit 0; }
+          for RPMF in *.rpm; do
+            [ -f "${RPMF}" ] || continue
+            echo "=================================================================="
+            echo "### ${RPMF}"
+            rpm -qp --queryformat \
+              'Name:     %{NAME}\nVersion:  %{VERSION}-%{RELEASE}\nArch:     %{ARCH}\nLicense:  %{LICENSE}\nSize:     %{SIZE}\nSummary:  %{SUMMARY}\n' \
+              "${RPMF}" 2>/dev/null || true
+            echo "--- requires ---"
+            rpm -qp --requires "${RPMF}" 2>/dev/null | grep -v '^rpmlib(' | sed 's/^/  /' || true
+            echo "--- payload (first 15) ---"
+            rpm -qp --list "${RPMF}" 2>/dev/null | head -15 | sed 's/^/  /' || true
+          done
 
       - name: Generate multiarch tarball
         run: |
@@ -152,31 +304,63 @@ jobs:
           tar -czf "${TARBALL}" -C staging/ .
           ls -lh "${TARBALL}"
           echo "TARBALL=${TARBALL}" >> "$GITHUB_ENV"
+          # What users actually extract. A flattened SONAME chain double-loads
+          # libvx_rpp and segfaults rocalCreate() (#43); a non-executable runvx
+          # fails every runvx-based test (#44).
+          FAIL=0
+          echo "=== libvx_rpp chain in the dist tarball ==="
+          CHAIN="$(tar -tvzf "${TARBALL}" | grep 'lib/libvx_rpp\.so' || true)"
+          echo "${CHAIN}"
+          LINKS="$(printf '%s\n' "${CHAIN}" | grep -c '^l' || true)"
+          if [ "${LINKS}" -lt 2 ]; then
+            echo "ERROR: libvx_rpp SONAME chain is not symlinked in the tarball"
+            FAIL=1
+          fi
+          echo "=== runvx mode in the dist tarball ==="
+          RUNVX="$(tar -tvzf "${TARBALL}" | grep 'bin/runvx' || true)"
+          echo "${RUNVX}"
+          # Match the mode field only; the filename itself contains an "x".
+          RUNVX_MODE="$(printf '%s\n' "${RUNVX}" | awk 'NR==1{print $1}')"
+          case "${RUNVX_MODE}" in
+            *x*) echo "runvx is executable: OK" ;;
+            "")  echo "ERROR: runvx absent from tarball"; FAIL=1 ;;
+            *)   echo "ERROR: runvx is not executable in the tarball"; FAIL=1 ;;
+          esac
+          [ "${FAIL}" -eq 0 ] || exit 1
 
       - name: Generate meta DEB packages
         working-directory: pkg-build
         run: |
           cmake --build . --target package-meta-vision 2>/dev/null \
-            || echo "Meta packages skipped (equivs-build not available)"
+            || echo "Meta packages skipped (equivs-build/rpmbuild not available)"
           # equivs-build writes each meta .deb into its WORKING_DIRECTORY
-          # (pkg-build/meta). Collect them next to the component .debs so the
-          # repo/upload steps pick up amdrocm-vision, -sdk and -tests too.
+          # (pkg-build/meta). RPM metas land under meta/rpms/<arch>/. Collect
+          # both next to the component packages so upload/repo steps pick them up.
           cp meta/*.deb . 2>/dev/null || echo "(no meta .debs produced)"
+          find meta/rpms -name '*.rpm' -exec cp {} . \; 2>/dev/null \
+            || echo "(no meta .rpms produced)"
           echo "Meta packages:"; ls -1 *.deb | grep -E 'amdrocm-vision(-sdk|-tests)?_' || true
-          # #3 AC2: when equivs-build is present (it is in CI, installed above),
-          # all three meta-packages must be produced. equivs-build builds one
-          # .deb per control file, so a missing stanza/template silently drops a
-          # package — assert each exists rather than soft-passing.
           if command -v equivs-build >/dev/null 2>&1; then
             MISSING=0
             for m in amdrocm-vision amdrocm-vision-sdk amdrocm-vision-tests; do
               if ls "${m}_"*.deb >/dev/null 2>&1; then
-                echo "  ${m}: OK"
+                echo "  ${m} .deb: OK"
               else
                 echo "  ERROR: meta-package ${m} was not produced"; MISSING=1
               fi
             done
             [ "${MISSING}" -eq 0 ] || { echo "Meta-package generation incomplete"; exit 1; }
+          fi
+          if command -v rpmbuild >/dev/null 2>&1; then
+            MISSING=0
+            for m in amdrocm-vision amdrocm-vision-sdk amdrocm-vision-tests; do
+              if ls "${m}-"[0-9]*.rpm >/dev/null 2>&1; then
+                echo "  ${m} .rpm: OK"
+              else
+                echo "  ERROR: RPM meta-package ${m} was not produced"; MISSING=1
+              fi
+            done
+            [ "${MISSING}" -eq 0 ] || { echo "RPM meta-package generation incomplete"; exit 1; }
           fi
 
       - name: Build APT repo metadata
@@ -230,6 +414,11 @@ jobs:
         if: inputs.release_type == 'nightly'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job's workspace is a container mount. Git stops at that
+          # boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM), so `gh` cannot see the
+          # checkout. CI never hits this step; nightly does. Name the repo
+          # explicitly and pass the commit, so neither command shells out to git.
+          GH_REPO: ${{ github.repository }}
         run: |
           VER="${{ steps.version.outputs.version }}"
           BUILD="${{ steps.version.outputs.build_id }}"
@@ -237,9 +426,8 @@ jobs:
           TAG="nightly-${BUILD}"
           SHA="${{ inputs.sha || github.sha }}"
 
-          # Replace previous nightly tag
-          gh release delete "${TAG}" --yes 2>/dev/null || true
-          git tag -d "${TAG}" 2>/dev/null || true
+          # Replace the previous day's release. A missing tag is expected.
+          gh release delete "${TAG}" --yes --cleanup-tag || true
 
           cat > /tmp/release-notes.md << NOTES
           Nightly build of AMD ROCm Computer Vision extension pack.
@@ -257,24 +445,56 @@ jobs:
 
           ## Install (DEB)
           \`\`\`bash
-          dpkg -i amdrocm-mivisionx_${VER}_amd64.deb
-          dpkg -i amdrocm-rocal_${VER}_amd64.deb
-          dpkg -i amdrocm-roccv_${VER}_amd64.deb
-          dpkg -i amdrocm-pydecode_${VER}_amd64.deb
-          dpkg -i amdrocm-vision-sysdeps_${VER}_amd64.deb
+          # CPack files are amdrocm-vision-<ver>-Linux-<component>.deb
+          # Package names: amdrocm-mivisionx, amdrocm-pydecode, …
+          dpkg -i amdrocm-*.deb
           \`\`\`
 
           Requires ROCm ${ROCM} or later installed at /opt/rocm.
           NOTES
 
           gh release create "${TAG}" \
+            --target "${SHA}" \
             --prerelease \
             --title "vision-pack nightly ${VER} (${BUILD})" \
             --notes-file /tmp/release-notes.md \
             pkg-build/*.deb \
             pkg-build/*.rpm \
-            vision-pack-dist-linux-multiarch-*.tar.gz \
-            2>/dev/null || echo "Release upload skipped (no packages)"
+            vision-pack-dist-linux-multiarch-*.tar.gz
+
+  # ---------------------------------------------------------------------------
+  # Per-package validation.
+  #
+  # Walks every produced DEB one at a time, printing its control metadata
+  # (dpkg -I) and payload listing (dpkg -c), then checking the things that have
+  # actually broken before: missing payload, paths escaping /opt/rocm, flattened
+  # SONAME chains, non-executable binaries, un-isolated bundled SONAMEs and
+  # incomplete control fields. Kept as a separate stage so a packaging fault is
+  # reported independently of the runtime smoke tests.
+  # ---------------------------------------------------------------------------
+  validate-packages:
+    needs: package
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:24.04
+      options: --user root
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dpkg tools
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends dpkg-dev
+
+      - name: Download DEB artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: vision-pack-deb-${{ needs.package.outputs.version }}-${{ needs.package.outputs.build_id }}
+          path: debs/
+
+      - name: Validate every package
+        run: bash build_tools/validate_packages.sh debs
 
   # ---------------------------------------------------------------------------
   # Clean-runner package-install smoke test (#4).
@@ -303,6 +523,18 @@ jobs:
           # binutils → readelf; libc-bin → ldd; python3 for the import check.
           # NO build tools, NO ROCm — this is a clean runtime host on purpose.
           apt-get install -y --no-install-recommends binutils libc-bin python3
+          # Plant host copies carrying the STOCK sonames that the bundled deps
+          # were renamed away from, so the isolation assertion later has
+          # something that could shadow them. This has to happen here, before
+          # the vision DEBs: those are force-installed with unsatisfiable ROCm
+          # depends, after which apt refuses to resolve anything else.
+          # One package per call — apt aborts the whole transaction on a single
+          # unknown name, which previously left no decoys planted at all.
+          for PKG in libturbojpeg libprotobuf32t64 libprotobuf-lite32t64 \
+                     liblmdb0 libsndfile1; do
+            apt-get install -y --no-install-recommends "${PKG}" \
+              || echo "::warning::decoy package ${PKG} unavailable"
+          done
 
       - name: Download DEB artifact
         uses: actions/download-artifact@v8
@@ -321,9 +553,13 @@ jobs:
           # rocal/roccv/mivisionx carry external ROCm depends (rpp/hip/decode/
           # jpeg) not present on a bare runner; force-install the payloads so we
           # can inspect the shipped .so files for isolation.
-          for comp in mivisionx roccv rocal; do
+          for comp in mivisionx roccv rocal rocpydecode; do
             f="$(deb "$comp")"
-            [ -n "$f" ] && dpkg --force-depends -i "$f"
+            if [ -z "$f" ]; then
+              echo "ERROR: runtime package ${comp} not found among downloaded DEBs"
+              exit 1
+            fi
+            dpkg --force-depends -i "$f"
           done
           echo "=== installed vision tree ==="
           ls -la /opt/rocm/lib/rocm_sysdeps/lib/ || true
@@ -332,6 +568,31 @@ jobs:
         run: |
           set -eu
           FAIL=0
+          # Check every shipped library, not just librocal: any of them could
+          # pick up a bundled dep, and a stock SONAME on any one of them is
+          # exactly what a host copy could shadow.
+          echo "=== every shipped .so references only isolated SONAMEs ==="
+          CHECKED=0
+          for LIB in /opt/rocm/lib/*.so*; do
+            { [ -f "${LIB}" ] && [ ! -L "${LIB}" ]; } || continue
+            CHECKED=$((CHECKED + 1))
+            N="$(readelf -d "${LIB}" 2>/dev/null | grep -i NEEDED || true)"
+            STOCK="$(echo "${N}" \
+              | grep -Ei "lib(protobuf|protobuf-lite|turbojpeg|jpeg|lmdb|sndfile)\.so" \
+              | grep -iv "rocm-vision" || true)"
+            if [ -n "${STOCK}" ]; then
+              echo "  ERROR: $(basename "${LIB}") references a stock bundled SONAME:"
+              echo "${STOCK}" | sed 's/^/      /'
+              FAIL=1
+            else
+              echo "  $(basename "${LIB}"): OK"
+            fi
+          done
+          if [ "${CHECKED}" -eq 0 ]; then
+            echo "ERROR: no libraries found under /opt/rocm/lib to check"; exit 1
+          fi
+          echo "  ${CHECKED} librar(ies) checked"
+
           LIB=/opt/rocm/lib/librocal.so
           if [ ! -e "$LIB" ]; then
             echo "ERROR: $LIB not installed"; exit 1
@@ -339,12 +600,6 @@ jobs:
           echo "=== librocal.so NEEDED ==="
           NEEDED="$(readelf -d "$LIB" | grep -i NEEDED || true)"
           echo "${NEEDED}"
-          # Every bundled-dep reference must be a private *-rocm-vision SONAME.
-          if echo "${NEEDED}" \
-              | grep -Ei "lib(protobuf|protobuf-lite|turbojpeg|jpeg|lmdb|sndfile)\.so" \
-              | grep -qiv "rocm-vision"; then
-            echo "ERROR: librocal.so references a stock bundled SONAME"; FAIL=1
-          fi
           if ! echo "${NEEDED}" | grep -qi "libprotobuf-rocm-vision"; then
             echo "ERROR: librocal.so missing isolated protobuf NEEDED"; FAIL=1
           fi
@@ -371,13 +626,44 @@ jobs:
       - name: Assert host copies do not shadow bundled deps
         run: |
           set -eu
-          # Install conflicting host copies with the STOCK sonames on the
-          # default loader path. If isolation works, ldd must still bind the
-          # bundled *-rocm-vision copies from rocm_sysdeps, not these.
-          apt-get install -y --no-install-recommends \
-            libprotobuf32t64 libturbojpeg0 liblmdb0 libsndfile1 || \
-          apt-get install -y --no-install-recommends \
-            libprotobuf-lite32t64 libturbojpeg0 liblmdb0 libsndfile1 || true
+          # The decoys carrying the stock sonames were installed before the
+          # vision DEBs (see "Install minimal runtime tools"). If isolation
+          # works, ldd must still bind the bundled *-rocm-vision copies from
+          # rocm_sysdeps rather than these. The assertion only means something
+          # if they are actually present, so fail when none were planted.
+          echo "=== stock sonames planted on the default loader path ==="
+          PLANTED=0
+          for SO in libturbojpeg.so.0 libprotobuf.so.32 liblmdb.so.0 libsndfile.so.1; do
+            HIT="$(ldconfig -p | grep -F "${SO}" | head -1 || true)"
+            if [ -n "${HIT}" ]; then
+              echo "  ${HIT}"
+              PLANTED=$((PLANTED + 1))
+            else
+              echo "  ${SO}: not planted"
+            fi
+          done
+          if [ "${PLANTED}" -eq 0 ]; then
+            echo "ERROR: no conflicting host copies could be installed, so this"
+            echo "       check would pass without proving any isolation"
+            exit 1
+          fi
+          echo "  ${PLANTED} stock soname(s) present"
+          # Resolve every shipped library, not just librocal. ldd cannot fully
+          # resolve them here (hip/rpp are absent by design), but the bundled
+          # deps must still bind to rocm_sysdeps rather than the planted copies.
+          echo "=== isolated deps resolve to rocm_sysdeps for every library ==="
+          for L in /opt/rocm/lib/*.so*; do
+            { [ -f "${L}" ] && [ ! -L "${L}" ]; } || continue
+            OUT="$(ldd "${L}" 2>/dev/null | grep -i 'rocm-vision' || true)"
+            [ -n "${OUT}" ] || continue
+            OUTSIDE="$(echo "${OUT}" | grep -v 'rocm_sysdeps/lib' || true)"
+            if [ -n "${OUTSIDE}" ]; then
+              echo "  ERROR: $(basename "${L}") resolved an isolated dep outside rocm_sysdeps:"
+              echo "${OUTSIDE}" | sed 's/^/      /'
+              exit 1
+            fi
+            echo "  $(basename "${L}"): $(echo "${OUT}" | grep -c .) isolated dep(s) from rocm_sysdeps"
+          done
           echo "=== ldd librocal.so (bundled-dep lines) ==="
           LDD="$(ldd /opt/rocm/lib/librocal.so || true)"
           echo "${LDD}" | grep -Ei "rocm-vision|protobuf|turbojpeg|jpeg|lmdb|sndfile" || true
@@ -445,12 +731,15 @@ jobs:
           # counterparts pull external ROCm deps not present here, so force-
           # install payloads to lay down the files we need to discover.
           deb() { find debs -name "amdrocm-vision-*-Linux-$1.deb" | head -1; }
-          for comp in rocm-sysdeps-vision mivisionx mivisionx-dev rocal rocal-dev; do
+          for comp in rocm-sysdeps-vision mivisionx mivisionx-dev rocal rocal-dev \
+                      roccv roccv-dev; do
             f="$(deb "$comp")"
             [ -n "$f" ] && sudo dpkg --force-depends -i "$f" || echo "(skip $comp)"
           done
           echo "=== installed cmake shims ==="
           ls -la /opt/rocm/lib/cmake/Find*.cmake
+          echo "=== installed package configs ==="
+          find /opt/rocm/lib/cmake -name '*Config.cmake' | sed 's/^/  /'
 
       - name: Configure a downstream project against the shims
         run: |
@@ -470,3 +759,19 @@ jobs:
           echo "=== configuring downstream find_package project ==="
           cmake -S "${WORK}" -B "${WORK}/build" -DROCM_PATH=/opt/rocm
           echo "find_package(MIVisionX) and find_package(rocal) resolved: OK"
+
+      # rocCV ships a real config package rather than a shim, and that config
+      # calls find_dependency(HIP). This runner has no ROCm by design, so the
+      # most that can be checked here is that the package config is installed
+      # where CMake would look for it. The configure-time test that actually
+      # resolves it runs in build.yml's roccv leg, which has the SDK.
+      - name: Assert rocCV ships a discoverable package config
+        run: |
+          set -eu
+          CFG=/opt/rocm/lib/cmake/roccv/roccvConfig.cmake
+          if [ ! -f "${CFG}" ]; then
+            echo "ERROR: ${CFG} not installed by amdrocm-roccv-devel"; exit 1
+          fi
+          echo "  ${CFG}: present"
+          echo "  declared dependencies:"
+          grep -E 'find_dependency|find_package' "${CFG}" | sed 's/^/    /' || true

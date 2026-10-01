@@ -19,8 +19,9 @@ OpenMP, `rocm_sysdeps`) and installs the vision libs **directly into `/opt/rocm`
 top-level directories — identical conventions to every other ROCm component.
 
 The end product is a set of DEB/RPM/TGZ packages (`amdrocm-mivisionx`, `amdrocm-rocal`,
-`amdrocm-roccv`, `amdrocm-rocpydecode`, `amdrocm-vision-sysdeps`, plus `-devel`/`-test` variants and
-`amdrocm-vision*` meta-packages).
+`amdrocm-roccv`, `amdrocm-pydecode`, `amdrocm-vision-sysdeps`, plus `-devel`/`-test` variants and
+`amdrocm-vision*` meta-packages). `amdrocm-pydecode` is required — a missing build
+or empty package fails CI rather than being omitted from the meta Depends.
 
 ## How the packaging actually works (the whole flow)
 
@@ -29,8 +30,10 @@ The end product is a set of DEB/RPM/TGZ packages (`amdrocm-mivisionx`, `amdrocm-
    everything the vision libs need at build time, one prefix. Two selection modes:
    - **Rolling (default):** `--gpu-family <family> [--date YYYYMMDD]` scrapes the nightly index at
      `nightly.repo.amd.com/rocm/core/tarball/` and picks latest (or the dated build). Default family
-     is `gfx94X-dcgpu-tests`. Vision libs have no GPU kernel code, so *any* family builds all
-     families — pick the variant that bundles the CV packages, not by gfx id.
+     is `gfx94X-dcgpu-tests`. The vision libs *do* contain GPU kernels, but the HIP compiler
+     emits a code object per gfx target and bundles them all into one fat binary, so *any*
+     family builds for every architecture — pick the variant that bundles the CV packages,
+     not by gfx id. Verify coverage with `llvm-objdump --offloading <lib>`.
    - **Pinned (`--url <full-tarball-url>`):** bypasses the index entirely. Use for run-id multi-arch
      S3 artifacts (e.g. `therock-nightly-artifacts.s3.amazonaws.com/<run-id>-linux/...`) that have no
      rolling "latest" alias. Overrides `--gpu-family`/`--date`.
@@ -140,13 +143,17 @@ reintroduce the deb overlay.
 acquisition is now a single tarball fetch. The only remaining workaround is the shared-Python
 forwarding, which is an upstream fix to file — never patch submodules.
 
-## Build & test (local, on santiago)
+## Build & test (local)
 
 ```bash
 cmake -B build -S . -DROCM_PATH=/opt/rocm -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel $(nproc)
-sudo cmake --install build            # installs into /opt/rocm
 ```
+
+The product is packages and the dist tarball, not `cmake --install`. After
+the build, copy each `_subprojects/<lib>/stage` into `build/staging`, install
+the `runtime` component there, run `build_tools/rewrite_sonames.py`, then
+CPack from `packaging/` — see [README.md](README.md).
 
 Component flags: `-DVISION_PACK_ENABLE_{MIVISIONX,ROCAL,ROCCV,ROCPYDECODE}=OFF`.
 Bundling flags: `-DVISION_PACK_BUNDLE_{PYBIND11,DLPACK,RAPIDJSON,PROTOBUF,TURBOJPEG,LMDB,LIBSNDFILE}=OFF`

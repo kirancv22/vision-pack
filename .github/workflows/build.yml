@@ -1,8 +1,10 @@
 # vision-pack build workflow
 #
 # Builds all four ROCm CV libraries inside manylinux_2_28 against the
-# Quartz nightly SDK. Vision libs contain no GPU kernel code so a single
-# build covers all supported GPU families — no per-family matrix needed.
+# Quartz nightly SDK. The vision libs do contain GPU kernels, but the HIP
+# compiler emits a code object per gfx target and bundles them all into one
+# fat binary, so a single build covers every architecture — no per-family
+# matrix needed.
 #
 # Designed as a reusable workflow (workflow_call) so nightly.yml can call
 # it after bumping submodules, following TheRock's pattern of using one
@@ -86,13 +88,14 @@ env:
   CMAKE_BUILD_TYPE: Release
   VP_BUILD_PARALLEL: 24
   # Default SDK family when neither rocm_sdk_url nor rocm_sdk_family is given.
-  # Any family works (vision libs have no GPU kernel code); this variant
+  # Any family works (the compiler bundles a code object per gfx); this variant
   # bundles rpp/rocdecode/rocjpeg + share/rocdecode/utils.
   ROCM_SDK_FAMILY_DEFAULT: gfx94X-dcgpu-tests
 
 jobs:
   build:
-    # Vision libs have no GPU kernel code — one build covers all GPU families.
+    # One build covers all GPU families: the HIP compiler bundles a code object
+    # per gfx target into each .so, so no per-architecture build is needed.
     # Use TheRock's pre-built manylinux image which already has gcc-toolset-13,
     # LIBRARY_PATH, and all build prerequisites configured correctly for
     # amdclang++/lld builds. Same image TheRock uses for all its components.
@@ -115,6 +118,14 @@ jobs:
           submodules: recursive
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
+
+      # The job runs as root inside the container while the checkout is owned
+      # by the runner user, so git refuses to operate on it at all. That had
+      # been masked by `2>/dev/null || echo` fallbacks around the version
+      # lookup, which meant a tag would never be found even once the project
+      # is tagged.
+      - name: Trust the workspace checkout
+        run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
 
       # TheRock's manylinux image has gcc-toolset-13, cmake 3.27, ninja,
       # Python 3.12 interpreter. We additionally need:
@@ -171,7 +182,14 @@ jobs:
             ARGS="${ARGS} --gpu-family ${FAMILY}"
             [ -n "${SDK_DATE}" ] && ARGS="${ARGS} --date ${SDK_DATE}"
           fi
-          python3 build_tools/fetch_rocm_sdk.py ${ARGS}
+          python3 build_tools/fetch_rocm_sdk.py ${ARGS} > /tmp/sdk-fetch.log 2>&1 \
+            || { cat /tmp/sdk-fetch.log; exit 1; }
+          cat /tmp/sdk-fetch.log
+          # Record which tarball was actually resolved. "latest" moves, so
+          # without this a nightly that breaks cannot be reproduced (#29).
+          RESOLVED="$(sed -n 's/^Selected[^:]*: //p' /tmp/sdk-fetch.log | head -1)"
+          echo "VP_RESOLVED_SDK=${RESOLVED}" >> "$GITHUB_ENV"
+          echo "Resolved SDK: ${RESOLVED:-<unknown>}"
           echo "SDK cmake packages available:"
           ls "${ROCM_PATH}/lib/cmake/" | head -30
 
@@ -221,21 +239,8 @@ jobs:
 
       - name: Build
         run: |
-          # Core libraries must build — a failure here is a real regression.
-          # (Building vp_rocal pulls in mivisionx + the bundled third-party deps
-          # via its dependency edges.)
           cmake --build build --parallel "${VP_BUILD_PARALLEL}" \
-            --target vp_mivisionx vp_roccv vp_rocal
-          # rocpydecode is newly enabled and upstream-blocked on rocPyDecode#290
-          # (Development.Embed / libpython on manylinux). Build it best-effort so
-          # a rocpydecode-only failure does not turn the whole build red — if it
-          # fails it simply produces no stage dir and is skipped downstream.
-          if cmake --build build --parallel "${VP_BUILD_PARALLEL}" \
-              --target vp_rocpydecode; then
-            echo "rocpydecode build: OK"
-          else
-            echo "::warning::rocpydecode build failed — continuing without it (upstream rocPyDecode#290); its stage dir will be absent and it is dropped from staging/packaging."
-          fi
+            --target vp_mivisionx vp_roccv vp_rocal vp_rocpydecode
 
       # Stage install — into build/staging/ (mirrors /opt/rocm layout).
       # Bundled sysdeps also land here via the install() rules in third-party/.
@@ -253,8 +258,8 @@ jobs:
           for proj in mivisionx roccv rocal rocpydecode; do
             stage="build/_subprojects/${proj}/stage"
             if [ ! -d "${stage}" ]; then
-              echo "Skipping ${proj} — no stage dir (component disabled?)"
-              continue
+              echo "ERROR: ${proj} has no stage dir"
+              exit 1
             fi
             echo "Staging ${proj} from ${stage}"
             cp -a "${stage}/." build/staging/
@@ -288,6 +293,11 @@ jobs:
             "build/staging/lib/libroccv.so:rocCV libroccv" \
             "build/staging/lib/rocal_pybind*.so:rocAL Python binding" \
             "build/staging/lib/rocpycv*.so:rocCV Python binding" \
+            "build/staging/lib/rocpydecode*.so:rocPyDecode Python binding" \
+            "build/staging/lib/rocpyjpegdecode*.so:rocPyJPEGDecode Python binding" \
+            "build/staging/lib/pyRocVideoDecode:rocPyDecode Python package" \
+            "build/staging/lib/pyRocJpegDecode:rocPyJPEGDecode Python package" \
+            "build/staging/share/rocpydecode/tests:rocPyDecode test sources" \
             "build/staging/bin/runvx:mivisionx runvx tool" \
             "build/staging/share/rocal/test/data/images/AMD-tinyDataSet:rocAL test data" \
             "${SYSDEPS}/libturbojpeg-rocm-vision.so*:bundled turbojpeg" \
@@ -320,6 +330,21 @@ jobs:
               FAIL=1
             else
               echo "  ${NEG_LABEL} absent: OK"
+            fi
+          done
+          # rocpydecode modules must sit in lib/ with every other vision .so,
+          # not lib64/ (rocpydecode uses GNUInstallDirs, which defaults to lib64
+          # on this image; we pass -DCMAKE_INSTALL_LIBDIR=lib to override).
+          echo "=== rocpydecode modules in lib/ (not lib64/)? ==="
+          for MOD in rocpydecode rocpyjpegdecode; do
+            if ls build/staging/lib64/${MOD}*.so >/dev/null 2>&1; then
+              echo "  ERROR: ${MOD} staged in lib64/ instead of lib/ (CMAKE_INSTALL_LIBDIR override lost)"
+              FAIL=1
+            elif ls build/staging/lib/${MOD}*.so >/dev/null 2>&1; then
+              echo "  ${MOD} in lib/: OK"
+            else
+              echo "  ERROR: ${MOD} missing from staging/lib/"
+              FAIL=1
             fi
           done
           echo "=== Staged bundled runtime deps ==="
@@ -362,6 +387,116 @@ jobs:
             echo "  ERROR: librocal.so has no RPATH to rocm_sysdeps/lib"
             FAIL=1
           fi
+          # libomp ships at lib/llvm/lib, so any library with a NEEDED on it
+          # must carry $ORIGIN/llvm/lib or it aborts at load (#43). Selected by
+          # NEEDED rather than by name to cover libs that add OpenMP later.
+          echo "=== libs NEEDing libomp can resolve it? ==="
+          for SO in build/staging/lib/*.so*; do
+            { [ -f "${SO}" ] && [ ! -L "${SO}" ]; } || continue
+            patchelf --print-needed "${SO}" 2>/dev/null \
+              | grep -q '^libomp\.so' || continue
+            RP="$(patchelf --print-rpath "${SO}" 2>/dev/null || true)"
+            if printf '%s' "${RP}" | tr ':' '\n' | grep -q 'llvm/lib$'; then
+              echo "  $(basename "${SO}"): OK"
+            else
+              echo "  ERROR: $(basename "${SO}") NEEDs libomp.so but its RUNPATH"
+              echo "         lacks llvm/lib (${RP:-<none>})"
+              FAIL=1
+            fi
+          done
+          # Bundled deps must ship a RUNPATH that survives leaving the build
+          # machine: no absolute stage paths, and no empty tokens, which the
+          # loader resolves against the working directory (#45).
+          echo "=== staged ELF RUNPATHs are relocatable? ==="
+          for SO in build/staging/lib/*.so* "${SYSDEPS}"/lib*.so*; do
+            { [ -f "${SO}" ] && [ ! -L "${SO}" ]; } || continue
+            RP="$(patchelf --print-rpath "${SO}" 2>/dev/null || true)"
+            if [ -z "${RP}" ]; then
+              echo "  $(basename "${SO}"): no RUNPATH: OK"
+              continue
+            fi
+            BAD="$(printf '%s' "${RP}" | tr ':' '\n' \
+              | sed 's/^$/<empty>/' | grep -v '^\$ORIGIN' || true)"
+            if [ -n "${BAD}" ]; then
+              echo "  ERROR: $(basename "${SO}") has non-relocatable RUNPATH entries:"
+              echo "${BAD}" | sed 's/^/           /'
+              FAIL=1
+            else
+              echo "  $(basename "${SO}"): ${RP}: OK"
+            fi
+          done
+          # ROCm vendors its sysdeps under renamed librocm_sysdeps_<name>
+          # SONAMEs, so a plain NEEDED on something ROCm also vendors (libz,
+          # libzstd, libelf, libnuma, libdrm, ...) means the host copy was
+          # linked instead of the one shipped in the tree. This holds today
+          # because the bundled deps are built without external codecs; the
+          # gate prevents a flag change from regressing it silently.
+          echo "=== deps sourced from rocm_sysdeps, not the host? ==="
+          ROCM_SYS="${ROCM_PATH}/lib/rocm_sysdeps/lib"
+          BASE_RE='^(libc|libm|libdl|libpthread|librt|libstdc\+\+|libgcc_s|ld-linux-x86-64|libomp)\.so'
+          for SO in build/staging/lib/*.so* "${SYSDEPS}"/*.so*; do
+            { [ -f "${SO}" ] && [ ! -L "${SO}" ]; } || continue
+            for N in $(patchelf --print-needed "${SO}" 2>/dev/null); do
+              case "${N}" in librocm_sysdeps_*|*rocm-vision*) continue ;; esac
+              printf '%s' "${N}" | grep -qE "${BASE_RE}" && continue
+              STEM="$(printf '%s' "${N}" | sed -n 's/^lib\([a-z0-9+_-]*\)\.so.*/\1/p')"
+              [ -n "${STEM}" ] || continue
+              if ls "${ROCM_SYS}"/librocm_sysdeps_"${STEM}".so* >/dev/null 2>&1; then
+                echo "  ERROR: $(basename "${SO}") NEEDs ${N} from the host, but"
+                echo "         ROCm vendors librocm_sysdeps_${STEM} in rocm_sysdeps"
+                FAIL=1
+              fi
+            done
+          done
+          echo "  host-duplicate check complete"
+          # Each vision lib carries one HIP code object per gfx target in its
+          # .hip_fatbin. The target list comes from the compiler default (no
+          # AMDGPU_TARGETS is set here), so it shifts with the SDK: log the
+          # coverage for diffing between runs and fail if a lib has none.
+          # Do not use `llvm-objdump --offloading`: it extracts each bundle as
+          # a file beside the library, polluting the staging tree.
+          # A versioned .so must be one real file plus symlinks. If the chain is
+          # flattened into duplicate regular files the loader maps the library
+          # twice under two inodes, and libvx_rpp's exported
+          # get_kernels_to_publish interposes to the first copy while
+          # vxPublishKernels runs in the second against a NULL Kernel_List —
+          # a segfault in rocalCreate() (#43).
+          echo "=== versioned SO chains are symlinks, not copies? ==="
+          for BASE in libopenvx libvxu libvx_rpp librocal libroccv; do
+            REAL=0
+            for SO in build/staging/lib/${BASE}.so*; do
+              [ -e "${SO}" ] || continue
+              [ -L "${SO}" ] && continue
+              REAL=$((REAL + 1))
+            done
+            [ "${REAL}" -eq 0 ] && continue
+            if [ "${REAL}" -eq 1 ]; then
+              echo "  ${BASE}: 1 real file + symlinks: OK"
+            else
+              echo "  ERROR: ${BASE} has ${REAL} real files; the SONAME chain"
+              echo "         was flattened into duplicate copies"
+              FAIL=1
+            fi
+          done
+          echo "=== bundled GPU code objects per library ==="
+          for BASE in libopenvx libvx_rpp libroccv librocal; do
+            SO="$(readlink -f "build/staging/lib/${BASE}.so" 2>/dev/null || true)"
+            [ -n "${SO}" ] && [ -f "${SO}" ] || continue
+            FAT="$(mktemp)"
+            ARCHES=""
+            if objcopy -O binary --only-section=.hip_fatbin "${SO}" "${FAT}" 2>/dev/null \
+               && [ -s "${FAT}" ]; then
+              ARCHES="$(strings -a "${FAT}" | grep -oE 'gfx[0-9a-f]+' \
+                | sort -u | tr '\n' ' ')"
+            fi
+            rm -f "${FAT}"
+            COUNT="$(printf '%s' "${ARCHES}" | wc -w)"
+            echo "  ${BASE}: ${COUNT} arch(es): ${ARCHES:-<none>}"
+            if [ "${COUNT}" -eq 0 ]; then
+              echo "  ERROR: ${BASE} ships no GPU code objects"
+              FAIL=1
+            fi
+          done
           # librocal calls the raw libjpeg API (jpeg_std_error) but rocAL only
           # links libturbojpeg, so rewrite_sonames.py adds the isolated libjpeg
           # as an explicit NEEDED. Without it librocal.so fails to load (#39).
@@ -390,8 +525,22 @@ jobs:
       - name: Collect build metadata
         id: meta
         run: |
-          VER=$(git describe --tags --always --dirty 2>/dev/null || echo "0.1.0")
+          # Match only release version tags (v1.2.3 or bare 1.2.3). The nightly
+          # job tags every prerelease nightly-YYYYMMDD; without this filter
+          # `git describe` picks that up and yields e.g. nightly-20260926-3-gSHA,
+          # which is not a valid Debian/RPM version (must start with a digit) and
+          # fails CPack. Deliberately no --always: with no matching tag it would
+          # return a bare commit sha, which is not a meaningful version and makes
+          # the inter-package Depends unsatisfiable. Let describe fail instead and
+          # derive the version from the declared project version, keeping the
+          # commit as build metadata.
+          VER="$(git describe --tags --dirty --match 'v[0-9]*' --match '[0-9]*' 2>/dev/null || true)"
           VER="${VER#v}"
+          if [ -z "${VER}" ]; then
+            PROJ_VER="$(sed -n 's/^ *VERSION \([0-9][0-9.]*\).*/\1/p' CMakeLists.txt | head -1)"
+            VER="${PROJ_VER:-0.2.0}+g$(git rev-parse --short HEAD)"
+            echo "::notice::no tag found; derived package version ${VER}"
+          fi
           SHA="${{ github.sha }}"
           SHORT="${SHA:0:8}"
           ARTIFACT="vision-pack-staged-multiarch-${SHORT}"
@@ -399,19 +548,40 @@ jobs:
           echo "artifact_name=${ARTIFACT}" >> "$GITHUB_OUTPUT"
           # Manifest lives under share/vision-pack/ (a proper ROCm subdir), not
           # the staging root — otherwise the dist tarball drops it straight into
-          # /opt/rocm/vision-pack-manifest.json (#37).
-          mkdir -p build/staging/share/vision-pack
-          printf '{"version":"%s","sha":"%s","rocm_path":"%s","build_type":"%s","release_type":"%s"}\n' \
-            "${VER}" "${SHA}" "${ROCM_PATH}" "${CMAKE_BUILD_TYPE}" \
-            "${{ inputs.release_type || 'ci' }}" \
-            > build/staging/share/vision-pack/vision-pack-manifest.json
+          # /opt/rocm/vision-pack-manifest.json (#37). It records the resolved
+          # commit of every submodule and the gfx coverage of each library, so a
+          # shipped artifact can be traced back to its inputs (#29).
+          python3 build_tools/generate_manifest.py \
+            --output build/staging/share/vision-pack/vision-pack-manifest.json \
+            --version "${VER}" \
+            --rocm-path "${ROCM_PATH}" \
+            --rocm-sdk "${VP_RESOLVED_SDK:-}" \
+            --build-type "${CMAKE_BUILD_TYPE}" \
+            --release-type "${{ inputs.release_type || 'ci' }}" \
+            --staging-dir build/staging
           echo "Version: ${VER}  Artifact: ${ARTIFACT}"
+
+      # Pack the staging tree before uploading. actions/upload-artifact stores
+      # neither symlinks (it follows them and uploads copies) nor the Unix
+      # permission bits, and both matter here:
+      #   - libvx_rpp.so/.so.3/.so.3.3.2 arrive as three identical regular
+      #     files, so the loader loads the library twice under two inodes and
+      #     vxPublishKernels dereferences a NULL Kernel_List — every rocAL
+      #     program segfaults in rocalCreate() (#43).
+      #   - bin/runvx arrives 0644 and every runvx-based test fails to execute
+      #     (#44).
+      # A tarball round-trips both intact, so every consumer (test job,
+      # packaging job, dist tarball) receives the tree exactly as staged.
+      - name: Pack staged tree
+        run: |
+          tar -czf vision-pack-staging.tar.gz -C build/staging .
+          echo "Packed $(du -h vision-pack-staging.tar.gz | cut -f1)"
 
       - name: Upload staged artifacts
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.meta.outputs.artifact_name }}
-          path: build/staging/
+          path: vision-pack-staging.tar.gz
           # Nightly artifacts kept longer than CI artifacts
           retention-days: ${{ inputs.release_type == 'nightly' && 30 || 7 }}
 
@@ -432,16 +602,13 @@ jobs:
     secrets: inherit
 
   # ---------------------------------------------------------------------------
-  # Test stage — one matrix leg per library, running in parallel. Mirrors a
-  # target device: each leg installs the staged runtime + test-source tree into
-  # ROCM_PATH, then configures, compiles, and runs that library's installed test
-  # suite (share/<lib>/test) against the installed libs — the aggregator never
-  # builds tests itself. Re-fetches the SDK for the toolchain + runtime libs.
-  # CPU-only and non-blocking (continue-on-error): the runner has no GPU, so
-  # GPU-variant tests error but do not fail the pipeline. rocPyDecode disabled.
+  # Test stage — one matrix leg per library. Consumes the published dist
+  # tarball (same tree CPack packages), unpacks it into ROCM_PATH, then
+  # configures/runs that library's installed test suite. GPU suites skip
+  # cleanly when /dev/kfd is absent; CPU configure/build/test failures are red.
   # ---------------------------------------------------------------------------
   test:
-    needs: build
+    needs: [build, package]
     runs-on: ubuntu-24.04
     container:
       image: ghcr.io/rocm/therock_build_manylinux_x86_64@sha256:cf4f6d9909056906e4a1c0bc4c245658a0af4c6a6174082a86adfa2d518b7aeb
@@ -458,19 +625,20 @@ jobs:
           - lib: rocpydecode
 
     steps:
+      # The test legs build from the *installed* tree, so the only thing they
+      # need from the repo is build_tools/fetch_rocm_sdk.py. Cloning the
+      # submodules and full history here pulled protobuf, libjpeg-turbo and
+      # friends once per matrix leg for nothing.
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
           ref: ${{ inputs.ref || github.sha }}
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Install extra build tools
         run: |
           yum install -y python3-devel make curl 2>/dev/null || true
           echo "/opt/python/cp312-cp312/bin" >> "$GITHUB_PATH"
 
-      # Re-fetch the SDK: provides runtime .so's for all legs, and for rocAL the
-      # amdclang++ toolchain its ctests recompile with (--build-and-test).
       - name: Fetch nightly ROCm SDK
         env:
           SDK_DATE: ${{ inputs.rocm_sdk_date }}
@@ -487,29 +655,20 @@ jobs:
           fi
           python3 build_tools/fetch_rocm_sdk.py ${ARGS}
 
-      # Install the staged tree into ROCM_PATH — this is what the runtime +
-      # -test packages deliver on a target device: the libraries under lib/ and
-      # the test sources + data under share/<lib>/test/. The test sources are
-      # standalone CMake projects that find_package() the installed libs.
-      - name: Download staged install
+      - name: Download dist tarball
         uses: actions/download-artifact@v8
         with:
-          name: ${{ needs.build.outputs.artifact_name }}
-          path: staging
+          name: ${{ needs.package.outputs.tarball_artifact }}
+          path: dist
 
-      - name: Install staged tree into ROCM_PATH
+      - name: Install dist tarball into ROCM_PATH
         run: |
-          cp -r staging/. "${ROCM_PATH}/"
+          tar -xzf dist/vision-pack-dist-linux-multiarch-*.tar.gz -C "${ROCM_PATH}"
+          echo "runvx: $(stat -c '%a %n' "${ROCM_PATH}/bin/runvx" 2>/dev/null || echo absent)"
           echo "Installed test sources:"
           ls -d "${ROCM_PATH}"/share/${{ matrix.lib }}/test 2>/dev/null || true
 
-      # Build + run each library's installed test suite on this runner, exactly
-      # as a target device would from the -test package. Tests are compiled here
-      # (not in the build stage) against the installed libs. CPU-only and
-      # non-blocking — the runner has no GPU, so GPU-variant tests error but do
-      # not fail the pipeline.
       - name: Build & run tests — ${{ matrix.lib }}
-        continue-on-error: true
         env:
           PATH: ${{ env.ROCM_PATH }}/bin:/opt/python/cp312-cp312/bin:/usr/local/bin:/usr/bin:/bin
           LD_LIBRARY_PATH: >-
@@ -517,6 +676,7 @@ jobs:
           AGO_DEFAULT_TARGET: CPU
           HIP_PLATFORM: amd
         run: |
+          REQUIRES_GPU=0
           case "${{ matrix.lib }}" in
             mivisionx)
               TEST_SRC="${ROCM_PATH}/share/mivisionx/test"
@@ -525,19 +685,14 @@ jobs:
             rocal)
               TEST_SRC="${ROCM_PATH}/share/rocal/test"
               FILTER='-R _cpu$'
+              REQUIRES_GPU=1
               EXTRA_CMAKE='' ;;
             roccv)
               TEST_SRC="${ROCM_PATH}/share/roccv/test/cpp"
               FILTER=''
-              # rocCV test exes use std::thread but link no pthread. On
-              # manylinux_2_28 (glibc 2.28) pthread_create/join live in
-              # libpthread; glibc >= 2.34 folds them into libc. Add -pthread.
+              REQUIRES_GPU=1
               EXTRA_CMAKE='-DCMAKE_EXE_LINKER_FLAGS=-pthread' ;;
             rocpydecode)
-              # rocpydecode ships no installed share/<lib>/test tree (its only
-              # tests are source-tree configure regressions). Its runtime
-              # coverage here is the Python import smoke test below, so there is
-              # nothing to build/ctest — skip cleanly.
               TEST_SRC=''
               FILTER=''
               EXTRA_CMAKE='' ;;
@@ -545,6 +700,11 @@ jobs:
 
           if [ -z "${TEST_SRC}" ] || [ ! -d "${TEST_SRC}" ]; then
             echo "${{ matrix.lib }}: no installed test sources — skipping ctest"
+            exit 0
+          fi
+
+          if [ "${REQUIRES_GPU}" = "1" ] && [ ! -e /dev/kfd ]; then
+            echo "::warning::${{ matrix.lib }}: no ROCm GPU on this runner (/dev/kfd absent) — skipping its ctest suite. CPU runtime coverage is provided by the import smoke test."
             exit 0
           fi
 
@@ -574,13 +734,31 @@ jobs:
             --test-output-size-failed 102400 \
             -T Test
 
-      # Python import smoke test (#22). CTest can pass while the pybind module
-      # is broken (unresolved symbol from a bad link surfaces only at import).
-      # A linkage failure (ImportError / undefined symbol) is a real bug and
-      # fails the leg; a GPU-runtime failure (no device on this CPU runner) is
-      # tolerated. rocpydecode is newly enabled and upstream-blocked on
-      # rocPyDecode#290 (Development.Embed on manylinux), so its import runs in
-      # SOFT_FAIL mode — a failure is a warning, not a red leg.
+      # rocCV ships a real package config, and that config calls
+      # find_dependency(HIP). It can only be resolved where the SDK is present,
+      # so the downstream find_package test for it belongs here rather than in
+      # package.yml's findpackage-test, which runs without ROCm on purpose.
+      - name: Downstream find_package(roccv)
+        if: matrix.lib == 'roccv'
+        run: |
+          set -eu
+          WORK="$(mktemp -d)"
+          cat > "${WORK}/CMakeLists.txt" <<'CMAKE'
+          cmake_minimum_required(VERSION 3.20)
+          project(vp_roccv_findpackage LANGUAGES CXX)
+          find_package(roccv REQUIRED CONFIG)
+          message(STATUS "roccv_FOUND=${roccv_FOUND}")
+          message(STATUS "roccv_DIR=${roccv_DIR}")
+          CMAKE
+          cmake -S "${WORK}" -B "${WORK}/build" \
+            -DROCM_PATH="${ROCM_PATH}" \
+            "-DCMAKE_PREFIX_PATH=${ROCM_PATH};${ROCM_PATH}/lib/cmake;${ROCM_PATH}/lib/llvm"
+          echo "find_package(roccv CONFIG) resolved against the installed tree: OK"
+
+      # Python import smoke test. CTest can pass while the pybind module is
+      # broken (unresolved symbol from a bad link surfaces only at import).
+      # ModuleNotFoundError / ImportError fail the leg — amdrocm-pydecode is a
+      # required product package. A later runtime exception (no GPU) is tolerated.
       - name: Python import smoke test — ${{ matrix.lib }}
         if: matrix.lib == 'rocal' || matrix.lib == 'roccv' || matrix.lib == 'rocpydecode'
         env:
@@ -591,49 +769,53 @@ jobs:
           HIP_PLATFORM: amd
         run: |
           case "${{ matrix.lib }}" in
-            rocal)        MODULES="rocal_pybind"; SOFT_FAIL=0 ;;
-            roccv)        MODULES="rocpycv";      SOFT_FAIL=0 ;;
-            # Warn-only: don't fail the leg on a rocpydecode import problem.
-            rocpydecode)  MODULES="rocpydecode rocpyjpegdecode"; SOFT_FAIL=1 ;;
+            rocal)        MODULES="rocal_pybind" ;;
+            roccv)        MODULES="rocpycv" ;;
+            rocpydecode)  MODULES="rocpydecode rocpyjpegdecode" ;;
           esac
           for MOD in ${MODULES}; do
             echo "=== import ${MOD} ==="
-            SOFT_FAIL="${SOFT_FAIL}" python3 - "${MOD}" <<'PY'
-          import importlib, os, sys
+            python3 - "${MOD}" <<'PY'
+          import importlib, sys
           mod = sys.argv[1]
-          soft = os.environ.get("SOFT_FAIL") == "1"
           try:
               importlib.import_module(mod)
               print(f"  import {mod}: OK")
           except ModuleNotFoundError as e:
-              # The extension module isn't on sys.path at all — it was never
-              # built or never staged (NOT a linkage error; ModuleNotFoundError
-              # is a subclass of ImportError, so catch it first). This is the
-              # rocal_pybind-not-built failure mode: report it distinctly.
-              msg = (f"import {mod} not found on sys.path — the binding was not "
-                     f"built/staged: {e}")
-              if soft:
-                  print(f"  WARNING: {msg} (soft-fail — not failing the leg)")
-              else:
-                  print(f"  ERROR: {msg}")
-                  sys.exit(1)
+              print(f"  ERROR: import {mod} not found on sys.path — the binding was not "
+                    f"built/staged: {e}")
+              sys.exit(1)
           except ImportError as e:
-              # Module file exists but failed to load — unresolved symbol / bad
-              # link / missing dependent .so. This is a real linkage bug.
-              if soft:
-                  print(f"  WARNING: import {mod} failed to link: {e} "
-                        f"(soft-fail — not failing the leg)")
-              else:
-                  print(f"  ERROR: import {mod} failed to link: {e}")
-                  sys.exit(1)
+              print(f"  ERROR: import {mod} failed to link: {e}")
+              sys.exit(1)
           except Exception as e:
-              # Module linked and initialised far enough to raise a non-link
-              # error (e.g. no GPU on this CPU runner). Tolerate — the binding
-              # itself loaded, which is what this smoke test proves.
               print(f"  import {mod} linked; runtime init raised "
                     f"{type(e).__name__}: {e} (tolerated on CPU runner)")
           PY
           done
+
+      - name: Run installed Python tests — rocpydecode
+        if: matrix.lib == 'rocpydecode'
+        env:
+          PATH: ${{ env.ROCM_PATH }}/bin:/opt/python/cp312-cp312/bin:/usr/local/bin:/usr/bin:/bin
+          LD_LIBRARY_PATH: >-
+            ${{ env.ROCM_PATH }}/lib:${{ env.ROCM_PATH }}/lib/llvm/lib:${{ env.ROCM_PATH }}/lib/rocm_sysdeps/lib
+          PYTHONPATH: ${{ env.ROCM_PATH }}/lib
+          HIP_PLATFORM: amd
+        run: |
+          TEST_DIR="${ROCM_PATH}/share/rocpydecode/tests"
+          if [ ! -d "${TEST_DIR}" ]; then
+            echo "ERROR: amdrocm-pydecode-test sources missing from the dist tarball (${TEST_DIR})"
+            exit 1
+          fi
+          # types_test.py only inspects pyRocVideoDecode.types — no GPU, no media.
+          if [ -f "${TEST_DIR}/types_test.py" ]; then
+            echo "=== ${TEST_DIR}/types_test.py ==="
+            python3 "${TEST_DIR}/types_test.py"
+          else
+            echo "ERROR: ${TEST_DIR}/types_test.py not installed"
+            exit 1
+          fi
 
       - name: Upload CTest results
         if: always()

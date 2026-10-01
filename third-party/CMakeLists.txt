@@ -29,12 +29,13 @@ set(VP_SYSDEPS_LIBDIR    "lib/rocm_sysdeps/lib"
 set(VP_SYSDEPS_INCLUDEDIR "lib/rocm_sysdeps/include"
     CACHE STRING "Install subdir for bundled runtime dep headers")
 
-# RPATH baked into every vision .so:
-#   1. rocm_sysdeps/lib — our bundled deps + ROCm's existing sysdeps (zlib etc.)
-#   2. $ORIGIN           — sibling libs in the same lib/ dir
-set(VP_BUNDLED_RPATH
-    "$ORIGIN:$ORIGIN/../lib/rocm_sysdeps/lib"
-    CACHE STRING "RPATH baked into vision library .so files")
+# RPATH for the bundled deps themselves. They install side by side in
+# rocm_sysdeps/lib, so $ORIGIN is the only entry required. Left unset, each
+# upstream build supplies its own: libjpeg-turbo an absolute stage path,
+# protobuf all-empty tokens that the loader resolves against the working
+# directory (#45). build_tools/rewrite_sonames.py normalizes what ships.
+set(VP_BUNDLED_RPATH "$ORIGIN"
+    CACHE STRING "RPATH baked into the bundled runtime deps in rocm_sysdeps/lib")
 
 # Build-time staging prefix for bundled deps (maps to rocm_sysdeps/ at install)
 set(_vp_sysdeps_stage "${CMAKE_BINARY_DIR}/third-party/rocm_sysdeps")
@@ -130,6 +131,12 @@ if(VISION_PACK_BUNDLE_PROTOBUF)
     if(TARGET ${_t})
       target_compile_options(${_t} PRIVATE
         -Wno-stringop-overread -Wno-error=stringop-overread)
+      # The install(CODE) glob below copies these .so's out of the build tree,
+      # and file(INSTALL) performs no RPATH fixup, so the build-tree RPATH is
+      # what ships. Apply the install RPATH at build time instead (#45).
+      set_target_properties(${_t} PROPERTIES
+        BUILD_WITH_INSTALL_RPATH ON
+        INSTALL_RPATH "${VP_BUNDLED_RPATH}")
     endif()
   endforeach()
   vision_pack_provide_package(protobuf Protobuf "third-party/protobuf-build")
@@ -165,6 +172,12 @@ if(VISION_PACK_BUNDLE_TURBOJPEG)
       -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
       -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
       -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      # No effect today: libjpeg-turbo's CMakeLists.txt:334 sets
+      # CMAKE_INSTALL_RPATH as a normal variable, which shadows this cache
+      # entry and bakes in the absolute stage path. rewrite_sonames.py corrects
+      # the shipped RPATH; this is kept for when upstream stops overriding it.
+      "-DCMAKE_INSTALL_RPATH=${VP_BUNDLED_RPATH}"
+      -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF
       -DENABLE_SHARED=ON
       -DENABLE_STATIC=OFF
       -DWITH_TURBOJPEG=ON
@@ -188,9 +201,28 @@ elseif(VISION_PACK_ENABLE_ROCAL)
 endif()
 
 # ---------------------------------------------------------------------------
-# LMDB 1.0.1  → lib/rocm_sysdeps/lib/liblmdb.so
+# LMDB 0.9.31  → lib/rocm_sysdeps/lib/liblmdb.so
 # LMDB has no CMakeLists; built via its Makefile.
 # Source lives in libraries/liblmdb/ inside the repo.
+#
+# Pinned to 0.9.x (Ubuntu's shipped liblmdb0 version) instead of the 1.0
+# series: LMDB 1.0 changed the on-disk format (MDB_DATA_VERSION 3 vs 1) in a
+# way upstream documents as permanently incompatible with 0.9 databases, and
+# rocAL's Caffe/Caffe2 LMDB readers only ever consume 0.9-format DBs (#58).
+#
+# The 0.9.x Makefile, unlike 1.0.x, does not embed a SONAME on liblmdb.so
+# (no LIBVER/ABIVER/VERSION_OPT), so rewrite_sonames.py would have nothing
+# to key its isolation rename on. LDFLAGS embeds one explicitly, matching
+# Ubuntu's own liblmdb.so.0.
+#
+# LDFLAGS also carries -pthread: the 0.9.x Makefile has no default LDFLAGS
+# of its own (1.0.x's does: `LDFLAGS = $(THREADS)`), and its generic tool
+# rule (`%: %.o`) links mdb_stat/mdb_copy/mdb_dump/mdb_load using only
+# $(CFLAGS)/$(LDFLAGS) -- with our CFLAGS override above dropping the
+# Makefile's own -pthread, those tools fail with "undefined reference to
+# pthread_*" on toolchains where pthread isn't merged into libc (glibc
+# < 2.34, e.g. the CI build image). liblmdb.so itself is unaffected since
+# its own recipe hardcodes -pthread directly.
 # ---------------------------------------------------------------------------
 if(VISION_PACK_BUNDLE_LMDB)
   set(_lmdb_stage "${_vp_sysdeps_stage}")
@@ -203,6 +235,7 @@ if(VISION_PACK_BUNDLE_LMDB)
       make -C "${CMAKE_CURRENT_SOURCE_DIR}/lmdb/libraries/liblmdb"
         "prefix=<INSTALL_DIR>"
         "CFLAGS=-O2 -fPIC"
+        "LDFLAGS=-pthread -Wl,-soname,liblmdb.so.0"
     INSTALL_COMMAND
       make -C "${CMAKE_CURRENT_SOURCE_DIR}/lmdb/libraries/liblmdb"
         "prefix=<INSTALL_DIR>"
@@ -215,7 +248,7 @@ if(VISION_PACK_BUNDLE_LMDB)
     COMPONENT runtime
     FILES_MATCHING PATTERN "liblmdb.so*"
   )
-  message(STATUS "[vision-pack] LMDB 1.0.1 → ${VP_SYSDEPS_LIBDIR}")
+  message(STATUS "[vision-pack] LMDB 0.9.31 → ${VP_SYSDEPS_LIBDIR}")
 elseif(VISION_PACK_ENABLE_ROCAL)
   find_library(LMDB_LIBRARIES NAMES lmdb)
   find_path(LMDB_INCLUDE_DIRS NAMES lmdb.h)
@@ -236,6 +269,8 @@ if(VISION_PACK_BUNDLE_LIBSNDFILE)
       -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
       -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
       -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      "-DCMAKE_INSTALL_RPATH=${VP_BUNDLED_RPATH}"
+      -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF
       -DBUILD_SHARED_LIBS=ON
       -DBUILD_PROGRAMS=OFF
       -DBUILD_EXAMPLES=OFF
