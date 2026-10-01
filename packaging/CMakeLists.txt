@@ -281,7 +281,7 @@ set(CPACK_DEBIAN_PYTHONPATH_PACKAGE_NAME           "amdrocm-vision-pythonpath")
 set(CPACK_DEBIAN_MIVISIONX_PACKAGE_DEPENDS
     "amdrocm-rpp (>= ${VP_ROCM_MIN}), amdrocm-runtime (>= ${VP_ROCM_MIN}) | amdrocm-runtime10.2 (>= ${VP_ROCM_MIN})")
 set(CPACK_DEBIAN_ROCAL_PACKAGE_DEPENDS
-    "amdrocm-mivisionx (>= ${VP_VER}), amdrocm-vision-sysdeps (>= ${VP_VER}), amdrocm-vision-pythonpath (>= ${VP_VER}), amdrocm-decode (>= ${VP_ROCM_MIN}), amdrocm-jpeg (>= ${VP_ROCM_MIN})")
+    "amdrocm-mivisionx (>= ${VP_VER}), amdrocm-vision-sysdeps (>= ${VP_VER}), amdrocm-vision-pythonpath (>= ${VP_VER}), amdrocm-decode (>= ${VP_ROCM_MIN}), amdrocm-jpeg (>= ${VP_ROCM_MIN}), amdrocm-hipfile10.2 (>= ${VP_ROCM_MIN})")
 set(CPACK_DEBIAN_ROCCV_PACKAGE_DEPENDS
     "amdrocm-vision-pythonpath (>= ${VP_VER}), amdrocm-runtime (>= ${VP_ROCM_MIN}) | amdrocm-runtime10.2 (>= ${VP_ROCM_MIN})")
 set(CPACK_DEBIAN_ROCPYDECODE_PACKAGE_DEPENDS
