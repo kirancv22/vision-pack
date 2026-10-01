@@ -285,20 +285,22 @@ set(CPACK_DEBIAN_ROCPYDECODE_PACKAGE_DEPENDS
     "amdrocm-vision-pythonpath (>= ${VP_VER}), amdrocm-decode (>= ${VP_ROCM}), amdrocm-jpeg (>= ${VP_ROCM})")
 
 # A -devel package is useless without the runtime it links against, and a -test
-# package without the runtime it exercises. rocAL headers include MIVisionX
-# headers, so its -devel also pulls amdrocm-mivisionx-devel.
+# package without the runtime it exercises. The C/C++ test sources also need
+# the headers, CMake config, and samples from the matching -devel package.
+# rocAL headers include MIVisionX headers, so its -devel also pulls
+# amdrocm-mivisionx-devel.
 set(CPACK_DEBIAN_MIVISIONX-DEV_PACKAGE_DEPENDS
     "amdrocm-mivisionx (>= ${VP_VER})")
 set(CPACK_DEBIAN_MIVISIONX-TEST_PACKAGE_DEPENDS
-    "amdrocm-mivisionx (>= ${VP_VER})")
+    "amdrocm-mivisionx (>= ${VP_VER}), amdrocm-mivisionx-devel (>= ${VP_VER})")
 set(CPACK_DEBIAN_ROCAL-DEV_PACKAGE_DEPENDS
     "amdrocm-rocal (>= ${VP_VER}), amdrocm-mivisionx-devel (>= ${VP_VER})")
 set(CPACK_DEBIAN_ROCAL-TEST_PACKAGE_DEPENDS
-    "amdrocm-rocal (>= ${VP_VER})")
+    "amdrocm-rocal (>= ${VP_VER}), amdrocm-rocal-devel (>= ${VP_VER})")
 set(CPACK_DEBIAN_ROCCV-DEV_PACKAGE_DEPENDS
     "amdrocm-roccv (>= ${VP_VER})")
 set(CPACK_DEBIAN_ROCCV-TEST_PACKAGE_DEPENDS
-    "amdrocm-roccv (>= ${VP_VER})")
+    "amdrocm-roccv (>= ${VP_VER}), amdrocm-roccv-devel (>= ${VP_VER})")
 set(CPACK_DEBIAN_ROCPYDECODE-TEST_PACKAGE_DEPENDS
     "amdrocm-pydecode (>= ${VP_VER})")
 
@@ -341,15 +343,15 @@ set(CPACK_RPM_ROCPYDECODE_PACKAGE_REQUIRES
 set(CPACK_RPM_MIVISIONX-DEV_PACKAGE_REQUIRES
     "amdrocm-mivisionx >= ${VP_VER}")
 set(CPACK_RPM_MIVISIONX-TEST_PACKAGE_REQUIRES
-    "amdrocm-mivisionx >= ${VP_VER}")
+    "amdrocm-mivisionx >= ${VP_VER}, amdrocm-mivisionx-devel >= ${VP_VER}")
 set(CPACK_RPM_ROCAL-DEV_PACKAGE_REQUIRES
     "amdrocm-rocal >= ${VP_VER}, amdrocm-mivisionx-devel >= ${VP_VER}")
 set(CPACK_RPM_ROCAL-TEST_PACKAGE_REQUIRES
-    "amdrocm-rocal >= ${VP_VER}")
+    "amdrocm-rocal >= ${VP_VER}, amdrocm-rocal-devel >= ${VP_VER}")
 set(CPACK_RPM_ROCCV-DEV_PACKAGE_REQUIRES
     "amdrocm-roccv >= ${VP_VER}")
 set(CPACK_RPM_ROCCV-TEST_PACKAGE_REQUIRES
-    "amdrocm-roccv >= ${VP_VER}")
+    "amdrocm-roccv >= ${VP_VER}, amdrocm-roccv-devel >= ${VP_VER}")
 set(CPACK_RPM_ROCPYDECODE-TEST_PACKAGE_REQUIRES
     "amdrocm-pydecode >= ${VP_VER}")
 
