@@ -21,6 +21,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a `nightly-YYYYMMDD` prerelease tag no longer yields a non-numeric version
   (e.g. `nightly-20260926-3-gSHA`) that CPack rejects.
 
+### Added
+- Bundled third-party dependencies now ship their license files, each in the
+  package that carries its code, under `share/doc/<pkg>/licenses/<dep>/`:
+  - `amdrocm-vision-sysdeps`: protobuf, libjpeg-turbo (`LICENSE.md` +
+    `README.ijg`), lmdb (`LICENSE` + `COPYRIGHT`), libsndfile.
+  - `amdrocm-rocal`: pybind11, dlpack, rapidjson (vision-pack's bundled copies).
+  - `amdrocm-roccv`: pybind11, dlpack (rocCV's own vendored copies).
+  - `amdrocm-pydecode`: its own `LICENSE`, plus pybind11 and dlpack.
+  `validate_packages.sh` fails if a package ships a dep without its license,
+  including the split IJG/LMDB texts.
+- Each RPM's `License` tag now names exactly the licenses its payload carries
+  (e.g. `amdrocm-vision-sysdeps` →
+  `BSD-3-Clause AND IJG AND Zlib AND OLDAP-2.8 AND LGPL-2.1-or-later`, the
+  vision libraries → `MIT`) instead of a bare `MIT` for everything. CPack has
+  no per-component License override, so packaging builds all RPMs as `MIT` then
+  re-emits the bundling packages in extra `cpack -G RPM` passes with their
+  precise license; `build_tools/verify_rpm_licenses.sh` asserts every package's
+  final tag.
+
 ## [0.2.0] — 2026-09-24
 
 Packaging and CI cleanup. The product is DEB/RPM plus the dist tarball;
