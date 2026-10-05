@@ -368,7 +368,14 @@ jobs:
             for m in amdrocm-vision amdrocm-vision-sdk amdrocm-vision-tests; do
               # The ROCm <major>.<minor> is glued on. For example,
               # amdrocm-vision10.2_*.deb, not amdrocm-vision_*.deb.
-              if compgen -G "${m}[0-9]*.deb" >/dev/null; then
+              # This job runs in a container, so the shell is dash: compgen
+              # is bash-only and the check would fail after a successful build.
+              # A name with no match stays literal, and [ -e ] rejects it.
+              found=0
+              for f in "${m}"[0-9]*.deb; do
+                if [ -e "$f" ]; then found=1; break; fi
+              done
+              if [ "$found" -eq 1 ]; then
                 echo "  ${m} .deb: OK"
               else
                 echo "  ERROR: meta-package ${m} was not produced"; MISSING=1
@@ -379,7 +386,11 @@ jobs:
           if command -v rpmbuild >/dev/null 2>&1; then
             MISSING=0
             for m in amdrocm-vision amdrocm-vision-sdk amdrocm-vision-tests; do
-              if compgen -G "${m}[0-9]*.rpm" >/dev/null; then
+              found=0
+              for f in "${m}"[0-9]*.rpm; do
+                if [ -e "$f" ]; then found=1; break; fi
+              done
+              if [ "$found" -eq 1 ]; then
                 echo "  ${m} .rpm: OK"
               else
                 echo "  ERROR: RPM meta-package ${m} was not produced"; MISSING=1
