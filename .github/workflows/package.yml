@@ -360,7 +360,9 @@ jobs:
           if command -v equivs-build >/dev/null 2>&1; then
             MISSING=0
             for m in amdrocm-vision amdrocm-vision-sdk amdrocm-vision-tests; do
-              if ls "${m}_"*.deb >/dev/null 2>&1; then
+              # The ROCm <major>.<minor> is glued on. For example,
+              # amdrocm-vision10.2_*.deb, not amdrocm-vision_*.deb.
+              if compgen -G "${m}[0-9]*.deb" >/dev/null; then
                 echo "  ${m} .deb: OK"
               else
                 echo "  ERROR: meta-package ${m} was not produced"; MISSING=1
@@ -371,7 +373,7 @@ jobs:
           if command -v rpmbuild >/dev/null 2>&1; then
             MISSING=0
             for m in amdrocm-vision amdrocm-vision-sdk amdrocm-vision-tests; do
-              if ls "${m}-"[0-9]*.rpm >/dev/null 2>&1; then
+              if compgen -G "${m}[0-9]*.rpm" >/dev/null; then
                 echo "  ${m} .rpm: OK"
               else
                 echo "  ERROR: RPM meta-package ${m} was not produced"; MISSING=1
@@ -579,7 +581,13 @@ jobs:
             dpkg --force-depends -i "$f"
           done
           echo "=== installed vision tree ==="
-          ls -la /opt/rocm/lib/rocm_sysdeps/lib/ || true
+          VISION_LIB="$(find /opt/rocm -name 'librocal.so' -printf '%h\n' | head -1)"
+          if [ -z "${VISION_LIB}" ]; then
+            echo "ERROR: librocal.so was not installed"
+            exit 1
+          fi
+          echo "VISION_LIB=${VISION_LIB}" >> "$GITHUB_ENV"
+          ls -la "${VISION_LIB}/rocm_sysdeps/lib/" || true
 
       - name: Assert bundled SONAMEs are isolated
         run: |
@@ -590,7 +598,7 @@ jobs:
           # exactly what a host copy could shadow.
           echo "=== every shipped .so references only isolated SONAMEs ==="
           CHECKED=0
-          for LIB in /opt/rocm/lib/*.so*; do
+          for LIB in "${VISION_LIB}"/*.so*; do
             { [ -f "${LIB}" ] && [ ! -L "${LIB}" ]; } || continue
             CHECKED=$((CHECKED + 1))
             N="$(readelf -d "${LIB}" 2>/dev/null | grep -i NEEDED || true)"
@@ -606,11 +614,11 @@ jobs:
             fi
           done
           if [ "${CHECKED}" -eq 0 ]; then
-            echo "ERROR: no libraries found under /opt/rocm/lib to check"; exit 1
+            echo "ERROR: no libraries found under ${VISION_LIB} to check"; exit 1
           fi
           echo "  ${CHECKED} librar(ies) checked"
 
-          LIB=/opt/rocm/lib/librocal.so
+          LIB="${VISION_LIB}/librocal.so"
           if [ ! -e "$LIB" ]; then
             echo "ERROR: $LIB not installed"; exit 1
           fi
@@ -628,7 +636,7 @@ jobs:
           if ! echo "${NEEDED}" | grep -qi "libjpeg-rocm-vision"; then
             echo "ERROR: librocal.so missing isolated libjpeg NEEDED (#39)"; FAIL=1
           fi
-          JPEGLIB="$(find /opt/rocm/lib/rocm_sysdeps/lib -name 'libjpeg-rocm-vision.so*' \
+          JPEGLIB="$(find "${VISION_LIB}/rocm_sysdeps/lib" -name 'libjpeg-rocm-vision.so*' \
             -type f | head -1)"
           if [ -z "${JPEGLIB}" ]; then
             echo "ERROR: isolated libjpeg not shipped in rocm_sysdeps (#39)"; FAIL=1
@@ -669,7 +677,7 @@ jobs:
           # resolve them here (hip/rpp are absent by design), but the bundled
           # deps must still bind to rocm_sysdeps rather than the planted copies.
           echo "=== isolated deps resolve to rocm_sysdeps for every library ==="
-          for L in /opt/rocm/lib/*.so*; do
+          for L in "${VISION_LIB}"/*.so*; do
             { [ -f "${L}" ] && [ ! -L "${L}" ]; } || continue
             OUT="$(ldd "${L}" 2>/dev/null | grep -i 'rocm-vision' || true)"
             [ -n "${OUT}" ] || continue
@@ -682,7 +690,7 @@ jobs:
             echo "  $(basename "${L}"): $(echo "${OUT}" | grep -c .) isolated dep(s) from rocm_sysdeps"
           done
           echo "=== ldd librocal.so (bundled-dep lines) ==="
-          LDD="$(ldd /opt/rocm/lib/librocal.so || true)"
+          LDD="$(ldd "${VISION_LIB}/librocal.so" || true)"
           echo "${LDD}" | grep -Ei "rocm-vision|protobuf|turbojpeg|jpeg|lmdb|sndfile" || true
           # Each isolated dep must resolve to a file under rocm_sysdeps/lib, not
           # a host copy. Match the rocm_sysdeps/lib suffix rather than a literal
@@ -699,7 +707,7 @@ jobs:
           set -eu
           unset PYTHONPATH || true
           echo "=== .pth shipped? ==="
-          ls -l /usr/lib/python3/dist-packages/amdrocm-vision.pth
+          ls -l /usr/lib/python3/dist-packages/amdrocm-vision*.pth
           echo "=== /opt/rocm/lib on sys.path? ==="
           python3 - <<'PY'
           import sys
@@ -754,27 +762,31 @@ jobs:
             [ -n "$f" ] && sudo dpkg --force-depends -i "$f" || echo "(skip $comp)"
           done
           echo "=== installed cmake shims ==="
-          ls -la /opt/rocm/lib/cmake/Find*.cmake
+          find /opt/rocm -name 'Find*.cmake' -print
           echo "=== installed package configs ==="
-          find /opt/rocm/lib/cmake -name '*Config.cmake' | sed 's/^/  /'
+          find /opt/rocm -name '*Config.cmake' | sed 's/^/  /'
 
       - name: Configure a downstream project against the shims
         run: |
           set -eu
           WORK="$(mktemp -d)"
-          cat > "${WORK}/CMakeLists.txt" <<'CMAKE'
+          CMAKE_DIR="$(find /opt/rocm -name FindMIVisionX.cmake -printf '%h\n' | head -1)"
+          if [ -z "${CMAKE_DIR}" ]; then
+            echo "ERROR: FindMIVisionX.cmake was not installed"; exit 1
+          fi
+          cat > "${WORK}/CMakeLists.txt" <<CMAKE
           cmake_minimum_required(VERSION 3.20)
           project(vp_findpackage_smoke LANGUAGES CXX)
-          list(APPEND CMAKE_MODULE_PATH "/opt/rocm/lib/cmake")
+          list(APPEND CMAKE_MODULE_PATH "${CMAKE_DIR}")
           find_package(MIVisionX REQUIRED)
           find_package(rocal REQUIRED)
-          message(STATUS "MIVisionX_LIBRARIES=${MIVisionX_LIBRARIES}")
-          message(STATUS "MIVisionX_INCLUDE_DIRS=${MIVisionX_INCLUDE_DIRS}")
-          message(STATUS "rocal_LIBRARIES=${rocal_LIBRARIES}")
-          message(STATUS "rocal_INCLUDE_DIRS=${rocal_INCLUDE_DIRS}")
+          message(STATUS "MIVisionX_LIBRARIES=\${MIVisionX_LIBRARIES}")
+          message(STATUS "MIVisionX_INCLUDE_DIRS=\${MIVisionX_INCLUDE_DIRS}")
+          message(STATUS "rocal_LIBRARIES=\${rocal_LIBRARIES}")
+          message(STATUS "rocal_INCLUDE_DIRS=\${rocal_INCLUDE_DIRS}")
           CMAKE
           echo "=== configuring downstream find_package project ==="
-          cmake -S "${WORK}" -B "${WORK}/build" -DROCM_PATH=/opt/rocm
+          cmake -S "${WORK}" -B "${WORK}/build" -DROCM_PATH="$(dirname "$(dirname "${CMAKE_DIR}")")"
           echo "find_package(MIVisionX) and find_package(rocal) resolved: OK"
 
       # rocCV ships a real config package rather than a shim, and that config
@@ -785,9 +797,9 @@ jobs:
       - name: Assert rocCV ships a discoverable package config
         run: |
           set -eu
-          CFG=/opt/rocm/lib/cmake/roccv/roccvConfig.cmake
-          if [ ! -f "${CFG}" ]; then
-            echo "ERROR: ${CFG} not installed by amdrocm-roccv-devel"; exit 1
+          CFG="$(find /opt/rocm -path '*/cmake/roccv/roccvConfig.cmake' | head -1)"
+          if [ -z "${CFG}" ] || [ ! -f "${CFG}" ]; then
+            echo "ERROR: roccvConfig.cmake not installed by the rocCV devel package"; exit 1
           fi
           echo "  ${CFG}: present"
           echo "  declared dependencies:"

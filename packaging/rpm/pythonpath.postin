@@ -11,7 +11,7 @@ for d in site.getsitepackages():
     p = Path(d)
     try:
         p.mkdir(parents=True, exist_ok=True)
-        (p / "amdrocm-vision.pth").write_text(text)
+        (p / "amdrocm-vision@VP_ROCM_REL@.pth").write_text(text)
         raise SystemExit(0)
     except OSError as e:
         errors.append(f"{p}: {e}")
