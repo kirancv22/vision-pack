@@ -138,6 +138,10 @@ set(CPACK_COMPONENT_PYTHONPATH_DISPLAY_NAME     "AMD ROCm vision Python path")
 set(CPACK_COMPONENT_PYTHONPATH_DESCRIPTION
     "Registers /opt/rocm/lib on the Python path (.pth) so the vision Python "
     "modules import without manual PYTHONPATH setup.")
+set(CPACK_COMPONENT_PYTHONPATH-RPM_DISPLAY_NAME "AMD ROCm vision Python path")
+set(CPACK_COMPONENT_PYTHONPATH-RPM_DESCRIPTION
+    "Registers /opt/rocm/lib on the Python 3.12 path (.pth) so the vision Python "
+    "modules import without manual PYTHONPATH setup.")
 
 # ---------------------------------------------------------------------------
 # Install rules — paths match /opt/rocm exactly
@@ -304,16 +308,22 @@ install(DIRECTORY "${VISION_PACK_STAGING_DIR}/share/doc/amdrocm-vision-sysdeps/l
     DESTINATION "share/doc/${VP_PKG_SYSDEPS}" COMPONENT rocm-sysdeps-vision OPTIONAL
 )
 
-# --- Python path registration (.pth) → host site-packages (#4) ---
+# --- Python path registration (.pth) → host site-packages (#4, #67, #79) ---
 # The vision Python modules (rocal_pybind, rocpycv, rocpydecode, ...) install
 # flat into /opt/rocm/lib, which is not on the interpreter's sys.path, so users
 # otherwise need `export PYTHONPATH=/opt/rocm/lib`. A .pth file adds that dir to
 # sys.path automatically — but only when it lives in a *real* site directory, so
-# we install it to the host's absolute dist-packages, not under /opt/rocm. One
+# we install it to the host's absolute site directory, not under /opt/rocm. One
 # dedicated component owns the file so the three runtime packages can each
-# depend on it without a dpkg file-overwrite conflict.
-# Debian/Ubuntu read dist-packages. RPM sitelib is not that path — the RPM
-# %post (pythonpath.postin) writes the same .pth into python3's site-packages.
+# depend on it without a file-overwrite conflict.
+# Debian/Ubuntu read /usr/lib/python3/dist-packages. RHEL-family Python 3.12
+# reads /usr/lib/python3.12/site-packages, and the modules are CPython 3.12
+# builds, so the RPM ships that path as a packaged file. A %post that writes
+# an untracked .pth is not used: rpm would not own the file, and the platform
+# python3 (3.9 on RHEL 9) is not the interpreter that loads the modules.
+# cpack_project_config.cmake puts pythonpath in the DEB and pythonpath-rpm
+# in the RPM, so the .deb does not gain the 3.12 path and the RPM does not
+# own Debian's directories.
 # Filename carries the ROCm release (for example amdrocm-vision10.2.pth) so
 # two releases can both own a .pth. Each file lists /opt/rocm/lib, which
 # alternatives point at the selected core.
@@ -321,6 +331,11 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/python/amdrocm-vision.pth"
     DESTINATION /usr/lib/python3/dist-packages
     RENAME "amdrocm-vision${VP_ROCM_REL}.pth"
     COMPONENT pythonpath
+)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/python/amdrocm-vision.pth"
+    DESTINATION /usr/lib/python3.12/site-packages
+    RENAME "amdrocm-vision${VP_ROCM_REL}.pth"
+    COMPONENT pythonpath-rpm
 )
 
 # ---------------------------------------------------------------------------
@@ -417,15 +432,23 @@ set(CPACK_RPM_ROCCV-TEST_PACKAGE_NAME           "${VP_PKG_ROCCV_TEST}")
 set(CPACK_RPM_ROCPYDECODE_PACKAGE_NAME          "${VP_PKG_PYDECODE}")
 set(CPACK_RPM_ROCPYDECODE-TEST_PACKAGE_NAME     "${VP_PKG_PYDECODE_TEST}")
 set(CPACK_RPM_ROCM-SYSDEPS-VISION_PACKAGE_NAME  "${VP_PKG_SYSDEPS}")
-set(CPACK_RPM_PYTHONPATH_PACKAGE_NAME           "${VP_PKG_PYTHONPATH}")
-set(CPACK_RPM_PYTHONPATH_PACKAGE_REQUIRES       "python3")
-configure_file(
-  "${CMAKE_CURRENT_SOURCE_DIR}/rpm/pythonpath.postin"
-  "${CMAKE_CURRENT_BINARY_DIR}/rpm/pythonpath.postin"
-  @ONLY
+# Same package name as the Debian pythonpath component. The RPM generator
+# packages pythonpath-rpm instead (see cpack_project_config.cmake).
+set(CPACK_RPM_PYTHONPATH-RPM_PACKAGE_NAME       "${VP_PKG_PYTHONPATH}")
+set(CPACK_RPM_PYTHONPATH-RPM_PACKAGE_REQUIRES   "python3.12")
+# Do not own Python's site directories. python3.12 already does, and owning
+# them makes this package conflict with the interpreter package. The .pth
+# itself stays in %files, so rpm -e removes it.
+# CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION is appended as one quoted
+# element, so extra paths set that way never match. Replace the builtin
+# omit list and add the Python 3.12 directories to it.
+set(CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST
+    /etc /etc/init.d /usr /usr/bin
+    /usr/include /usr/lib /usr/libx32 /usr/lib64
+    /usr/share /usr/share/aclocal /usr/share/doc
+    /usr/lib/python3.12
+    /usr/lib/python3.12/site-packages
 )
-set(CPACK_RPM_PYTHONPATH_POST_INSTALL_SCRIPT_FILE
-    "${CMAKE_CURRENT_BINARY_DIR}/rpm/pythonpath.postin")
 
 # Requires mirror the DEB Depends above. Without them the RPMs declared no
 # dependencies at all and would install onto a host with no ROCm present.
@@ -457,6 +480,9 @@ set(CPACK_RPM_ROCPYDECODE-TEST_PACKAGE_REQUIRES
 # ---------------------------------------------------------------------------
 set(CPACK_GENERATOR "DEB;RPM;TGZ")
 set(CPACK_TGZ_COMPONENT_INSTALL ON)
+# Loaded once per generator. For RPM it swaps the pythonpath component.
+set(CPACK_PROJECT_CONFIG_FILE
+    "${CMAKE_CURRENT_SOURCE_DIR}/cpack_project_config.cmake")
 
 include(CPack)
 
