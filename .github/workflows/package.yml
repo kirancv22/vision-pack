@@ -765,6 +765,16 @@ jobs:
           if [ "$(tr -d '[:space:]' < "$PTH")" != "/opt/rocm/lib" ]; then
             echo "ERROR: ${PTH} does not list /opt/rocm/lib"; exit 1
           fi
+          # site.py adds a .pth line only when that directory exists. The
+          # packages install under /opt/rocm/core-<major>.<minor>, and a ROCm
+          # install points /opt/rocm/lib at that directory with alternatives.
+          # This runner has no ROCm SDK, so make that link from the installed
+          # core. Leave an existing /opt/rocm/lib alone.
+          if [ ! -e /opt/rocm/lib ]; then
+            mkdir -p /opt/rocm
+            ln -s "${VISION_LIB}" /opt/rocm/lib
+            echo "/opt/rocm/lib -> ${VISION_LIB}"
+          fi
           echo "=== ${PTH} (${PTH_PKG}) ==="
           echo "=== /opt/rocm/lib on sys.path? ==="
           python3 - <<'PY'
