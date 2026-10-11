@@ -1,12 +1,16 @@
 # vision-pack
 
-AMD ROCm Computer Vision optional extension pack. Builds and packages
-[MIVisionX](https://github.com/ROCm/MIVisionX),
-[rocAL](https://github.com/ROCm/rocAL),
-[rocCV](https://github.com/ROCm/rocCV), and
-[rocPyDecode](https://github.com/ROCm/rocPyDecode)
-from a single repository, installing into an existing `/opt/rocm` tree
-alongside every other ROCm component.
+**vision-pack is not a vision library.** It is a unified build and packaging
+harness that checks out, compiles, tests, and packages these four upstream
+ROCm projects into a single Linux installer:
+
+* [MIVisionX](https://github.com/ROCm/MIVisionX)
+* [rocAL](https://github.com/ROCm/rocAL)
+* [rocCV](https://github.com/ROCm/rocCV)
+* [rocPyDecode](https://github.com/ROCm/rocPyDecode)
+
+The resulting packages install into an existing `/opt/rocm` tree alongside
+every other ROCm component.
 
 Modelled on [TheRock](https://github.com/ROCm/TheRock): each library builds as
 an independent ExternalProject with stamp-file ordering. Bundled runtime deps
