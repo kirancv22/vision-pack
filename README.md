@@ -18,8 +18,8 @@ install into `lib/rocm_sysdeps/lib/`, the same directory ROCm already uses for
 zlib, bzip2, liblzma, and the rest.
 
 The **product** is the `amdrocm-*` DEB/RPM set plus
-`vision-pack-dist-linux-multiarch-<ver>.tar.gz`. All four runtimes — including
-`amdrocm-pydecode` — are required. Submodules are not patched
+`vision-pack-dist-linux-multiarch-<ver>.tar.gz`. All four runtime packages are
+required. Submodules are not patched
 ([ADR 0003](docs/adr/0003-no-submodule-patches.md)).
 
 **One build, every architecture.** The vision libraries contain GPU kernels,
@@ -48,8 +48,8 @@ To inspect a shipped library:
 vision-pack exists to **build, package, test, and deliver** the `amdrocm-vision`
 package set on **Linux**. Windows and macOS are out of scope.
 
-- build the four vision libraries plus the dependencies they require;
-- package them so contents and dependency metadata match ROCm conventions;
+- package the four vision libraries so contents and dependency metadata match
+  ROCm conventions;
 - test that what is packaged actually loads and runs;
 - make the artifacts easy for end users to obtain and try.
 
@@ -132,13 +132,10 @@ vision-pack/
 ### ROCm SDK
 
 Install ROCm 10.2 or later. CI uses the nightly **dcgpu-tests** SDK tarball,
-which carries the full SDK (HIP, compiler, `rocm_sysdeps`) *plus* the rpp,
-rocDecode, and rocJPEG headers/cmake configs and the rocDecode build utils
-(`share/rocdecode/utils`) all under a single prefix — no separate CV package
-install is needed.
+which bundles HIP, compilers, `rocm_sysdeps`, rpp, rocDecode, and rocJPEG under
+one prefix. No separate CV package is needed.
 
 ```bash
-# Download + extract the dcgpu-tests SDK tarball to /opt/rocm-nightly
 python3 build_tools/fetch_rocm_sdk.py \
     --gpu-family gfx94X-dcgpu-tests --dest /opt/rocm-nightly
 ```
@@ -148,13 +145,12 @@ bundles the CV packages, not one matching your gfx id. A pinned tarball URL
 (`--url`) bypasses the nightly index — use it for run-id S3 artifacts that
 have no rolling "latest".
 
-For an existing `/opt/rocm` install you need the rpp, rocDecode, and rocJPEG
-**dev** packages for headers and cmake configs, **plus `amdrocm-decode-test` and
-`amdrocm-jpeg-test`**. The utility sources under `share/rocdecode/utils`
-(`roc_video_dec.cpp`, `resize_kernels.cpp`) ship in the *test* packages, not the
-dev ones — rocAL compiles them directly, so without them its configure step
-fails with `Cannot find source file`. This is also why CI selects the
-`dcgpu-tests` SDK variant: it carries them under a single prefix.
+If using an existing `/opt/rocm`, install the rpp, rocDecode, and rocJPEG dev
+packages, **plus `amdrocm-decode-test` and `amdrocm-jpeg-test`**. The utility
+sources under `share/rocdecode/utils` (`roc_video_dec.cpp`, `resize_kernels.cpp`)
+ship in the *test* packages, not the dev ones — rocAL compiles them directly, so
+without them its configure step fails with `Cannot find source file`. This is
+why CI selects the `dcgpu-tests` SDK variant.
 
 ### System build tools (Ubuntu 22.04 / 24.04)
 
@@ -483,12 +479,10 @@ Workarounds live in vision-pack, not in the submodules.
   the package: a missing or empty `amdrocm-pydecode` fails CI.
   [rocPyDecode#290](https://github.com/ROCm/rocPyDecode/issues/290)
 
-- **Python bindings in lib/ instead of site-packages** — rocAL, rocCV and
-  rocPyDecode install `.so` extension modules to `/opt/rocm/lib`.
-  `amdrocm-vision-pythonpath` drops `amdrocm-vision.pth` into system
-  dist-packages (DEB) or site-packages (RPM `%post`). For a non-system
-  interpreter, still `export PYTHONPATH=/opt/rocm/lib:$PYTHONPATH` or copy the
-  `.pth`. Upstream site-packages fix:
+- **Python bindings install to `/opt/rocm/lib` instead of site-packages** —
+  `amdrocm-vision-pythonpath` registers `/opt/rocm/lib` for system Python via a
+  `.pth` file. For venv/conda, set `PYTHONPATH=/opt/rocm/lib` or copy the `.pth`
+  into that environment's site-packages. Upstream site-packages fixes tracked at
   [rocAL#514](https://github.com/ROCm/rocAL/issues/514),
   [rocPyDecode#285](https://github.com/ROCm/rocPyDecode/issues/285)
 
