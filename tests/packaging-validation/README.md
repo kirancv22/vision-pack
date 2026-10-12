@@ -49,13 +49,13 @@ Environment variables:
 3. Runs Python import smoke tests, MIVisionX, rocAL, rocCV, and rocPyDecode
    test suites.
 
-### Known good result (nightly 20261007)
+### Known good result (nightly 20261011)
 
 | Suite         | Result          |
 |---------------|-----------------|
 | Python imports| ok              |
 | MIVisionX     | 60/60 (100%)    |
-| rocAL         | 8/8 (100%)      |
+| rocAL         | 9/9 (100%)      |
 | rocCV         | 40/40 (100%)    |
 | rocPyDecode   | passed          |
 
@@ -89,7 +89,7 @@ Environment variables:
 
 - `ROCM_VERSION` — ROCm version to install, e.g. `10.2`.
 - `ROCM_REPO_URL` — full URL to the unsigned nightly ROCm core RPM repo.
-  Default points to the `20261007-37549649086` RHEL 9 build.
+  Default points to the `20261011-38096972781` RHEL 9 build.
 - `PYTHON_CMD` — Python interpreter to use. Default: `python3.12`.
 
 ### What the container does
@@ -100,41 +100,23 @@ Environment variables:
    `amdrocm-base<ver>`, `amdrocm-runtime-devel<ver>`, `amdrocm-rpp<ver>`,
    `amdrocm-decode<ver>`, `amdrocm-hipfile<ver>`, and `amdrocm-jpeg<ver>`.
 3. Adds the local vision-pack RPM repo.
-4. **Workaround for 20261007:** the vision-pack RPMs cannot be installed
-   cleanly with `yum` because `amdrocm-vision-sysdeps<ver>` provides the
-   un-renamed SONAME + symbol-version combinations while `amdrocm-rocal<ver>`
-   requires the renamed SONAME + symbol-version combinations. The concrete
-   RPMs are therefore force-installed with `rpm -ivh --nodeps`. The library
-   files are correct; only the RPM `Provides` metadata is incomplete. Once that
-   metadata is fixed, this workaround can be removed and the standard
-   `yum install amdrocm-vision-sdk<ver> amdrocm-vision-tests<ver>` path should
-   work.
+4. Installs `amdrocm-vision-sdk<ver>` and `amdrocm-vision-tests<ver>` from
+   the local RPM repo with `yum`/`dnf`.
 5. Runs the same test suites as the Ubuntu path.
 
-### Known good result with workaround (nightly 20261007)
+### Known good result (nightly 20261011)
 
 | Suite         | Result          |
 |---------------|-----------------|
 | Python imports| ok              |
 | MIVisionX     | 60/60 (100%)    |
-| rocAL         | 8/8 (100%)      |
+| rocAL         | 9/9 (100%)      |
 | rocCV         | 40/40 (100%)    |
 | rocPyDecode   | passed          |
 
 ### Open packaging issues found on RHEL 9
 
-1. **RPM Provides metadata gap in `amdrocm-vision-sysdeps10.2`.** The package
-   provides:
-   - `libsndfile.so.1(libsndfile.so.1.0)(64bit)`
-   - `libsndfile-rocm-vision.so.1()(64bit)`
-
-   but `amdrocm-rocal10.2` requires:
-   - `libsndfile-rocm-vision.so.1(libsndfile.so.1.0)(64bit)`
-
-   The same pattern occurs for `libturbojpeg-rocm-vision.so.0(TURBOJPEG_*)`.
-   This prevents `yum`/`dnf` from resolving the vision-pack SDK install.
-
-2. **Python ABI mismatch on UBI 9.** The packaged `.so` Python bindings target
+1. **Python ABI mismatch on UBI 9.** The packaged `.so` Python bindings target
    CPython 3.12 (`...cpython-312...so`), while RHEL/UBI 9 ships Python 3.9 by
    default. Install `python3.12` from the UBI 9 appstream repo to run the
    import smoke test and Python-based test suites.

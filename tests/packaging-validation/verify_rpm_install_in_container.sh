@@ -9,14 +9,14 @@ set -euo pipefail
 # Environment variables:
 #   ROCM_VERSION      ROCm version to install, e.g. 10.2 (default: 10.2)
 #   ROCM_REPO_URL     Full URL to the nightly ROCm core RPM repo directory
-#                     (default: https://nightly.repo.amd.com/rocm/core/packages/rhel9/20261007-37549649086/x86_64)
+#                     (default: https://nightly.repo.amd.com/rocm/core/packages/rhel9/20261011-38096972781/x86_64)
 #   VISION_PACK_REPO  Path to the local RPM repo inside the container
 #                     (default: /vision-pack-repo)
 #   SKIP_TESTS        Set to 1 to skip running tests (install-only mode)
 #   PYTHON_CMD        Python interpreter to use (default: python3.12)
 
 ROCM_VERSION="${ROCM_VERSION:-10.2}"
-ROCM_REPO_URL="${ROCM_REPO_URL:-https://nightly.repo.amd.com/rocm/core/packages/rhel9/20261007-37549649086/x86_64}"
+ROCM_REPO_URL="${ROCM_REPO_URL:-https://nightly.repo.amd.com/rocm/core/packages/rhel9/20261011-38096972781/x86_64}"
 VISION_REPO="${VISION_PACK_REPO:-/vision-pack-repo}"
 
 # UBI 9 minimal needs the CRB repo for some build dependencies and appstream
@@ -83,36 +83,12 @@ EOF
 yum clean all
 yum makecache
 
-# NOTE: As of nightly 20261007, dnf/yum cannot resolve the vision-pack
-# dependency chain automatically. amdrocm-vision-sysdeps${ROCM_VERSION}
-# ships the renamed libraries (libsndfile-rocm-vision.so.1,
-# libturbojpeg-rocm-vision.so.0, ...) but its RPM Provides only list the
-# un-renamed SONAME + symbol-version combinations.
-# amdrocm-rocal${ROCM_VERSION} requires the renamed SONAME + symbol-version
-# combinations, so the meta-packages amdrocm-vision-sdk/tests cannot be
-# installed cleanly. As a temporary workaround, force-install the concrete
-# vision-pack RPMs with rpm --nodeps. The files are correct; only the Provides
-# metadata is incomplete.
-echo "=== Workaround: force-install vision-pack RPMs (Provides metadata gap) ==="
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-10.2.0-20261007-Linux-rocm-sysdeps-vision.rpm"
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-10.2.0-20261007-Linux-pythonpath-rpm.rpm"
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-10.2.0-20261007-Linux-mivisionx.rpm"
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-10.2.0-20261007-Linux-mivisionx-dev.rpm"
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-10.2.0-20261007-Linux-mivisionx-test.rpm"
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-10.2.0-20261007-Linux-rocal.rpm"
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-10.2.0-20261007-Linux-rocal-dev.rpm"
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-10.2.0-20261007-Linux-rocal-test.rpm"
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-10.2.0-20261007-Linux-roccv.rpm"
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-10.2.0-20261007-Linux-roccv-dev.rpm"
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-10.2.0-20261007-Linux-roccv-test.rpm"
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-10.2.0-20261007-Linux-rocpydecode.rpm"
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-10.2.0-20261007-Linux-rocpydecode-test.rpm"
-
-# The meta-packages are not strictly required once the concrete packages are
-# installed, but include them for completeness.
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision10.2-10.2.0_20261007-20261007.noarch.rpm" || true
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-sdk10.2-10.2.0_20261007-20261007.noarch.rpm" || true
-rpm -ivh --nodeps "${VISION_REPO}/amdrocm-vision-tests10.2-10.2.0_20261007-20261007.noarch.rpm" || true
+# Install the vision-pack SDK and its tests through yum/dnf. The dependency
+# chain (including the renamed bundled sysdeps) is now resolvable.
+echo "=== Installing amdrocm-vision-sdk and tests ==="
+yum install -y --setopt=install_weak_deps=0 \
+  "amdrocm-vision-sdk${ROCM_VERSION}" \
+  "amdrocm-vision-tests${ROCM_VERSION}"
 
 # Set up the build environment to use the RPM-installed ROCm layout.
 BASE_ROCM="/opt/rocm"

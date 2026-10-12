@@ -18,7 +18,7 @@ set -euo pipefail
 # Environment:
 #   ROCM_VERSION      ROCm version to install (default: 10.2)
 #   ROCM_REPO_URL     Full URL to the nightly ROCm core RPM repo.
-#                     Default: https://nightly.repo.amd.com/rocm/core/packages/rhel9/20261007-37549649086/x86_64
+#                     Default: https://nightly.repo.amd.com/rocm/core/packages/rhel9/20261011-38096972781/x86_64
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RPM_REPO_DIR="${1:-${SCRIPT_DIR}/local-rpm-repo}"
@@ -50,7 +50,7 @@ docker run --rm \
   --device=/dev/dri \
   "${GROUP_ARGS[@]}" \
   -e "ROCM_VERSION=${ROCM_VERSION:-10.2}" \
-  -e "ROCM_REPO_URL=${ROCM_REPO_URL:-https://nightly.repo.amd.com/rocm/core/packages/rhel9/20261007-37549649086/x86_64}" \
+  -e "ROCM_REPO_URL=${ROCM_REPO_URL:-https://nightly.repo.amd.com/rocm/core/packages/rhel9/20261011-38096972781/x86_64}" \
   -v "$RPM_REPO_DIR:/vision-pack-repo:ro" \
   -v "$SCRIPT_SRC_DIR/verify_rpm_install_in_container.sh:/verify_rpm_install_in_container.sh:ro" \
   -v "${SCRIPT_DIR}/logs:/logs" \
