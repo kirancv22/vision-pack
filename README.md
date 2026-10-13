@@ -30,17 +30,6 @@ artifact names means. There is no per-architecture matrix. The GPU family in
 an SDK tarball name selects *which SDK to build against*, not what the build
 emits.
 
-The architecture list is the ROCm compiler default — vision-pack sets no
-`AMDGPU_TARGETS` or `--offload-arch`. Built against ROCm 10.2, `libopenvx`,
-`libvx_rpp` and `librocal` each carry 17 code objects (gfx908, gfx90a, gfx942,
-gfx950, gfx1030–1032, gfx1100–1102, gfx1150–1153, gfx1200/1201, gfx1250), while
-`libroccv` carries 13 — it is missing gfx1150, gfx1152, gfx1153 and gfx1250.
-To inspect a shipped library:
-
-```bash
-/opt/rocm/lib/llvm/bin/llvm-objdump --offloading /opt/rocm/lib/libvx_rpp.so
-```
-
 ---
 
 ## Scope
@@ -103,8 +92,11 @@ vision-pack/
 │   └── validate_packages.sh            per-DEB payload and metadata checks
 ├── packaging/
 │   ├── CMakeLists.txt                  CPack config (DEB/RPM/TGZ)
+│   ├── cpack_project_config.cmake      per-generator tweaks (RPM pythonpath swap)
 │   ├── meta/                           amdrocm-vision{,-sdk,-tests} (equivs + rpm)
-│   └── rpm/pythonpath.postin           RPM .pth into site-packages
+│   ├── pkgconfig/                      .pc templates (openvx, vx_rpp, rocal, roccv)
+│   ├── python/amdrocm-vision.pth.in    Python path .pth (configured per ROCm release)
+│   └── notes/                          shipped notes (e.g. OpenCV-less GDF samples)
 ├── .github/workflows/
 │   ├── build.yml                       build → package.yml → test
 │   ├── nightly.yml                     submodule bump → build → package
@@ -262,7 +254,9 @@ copy of the `.pth`).
 
 ### Install layout
 
-Files land directly under `/opt/rocm` — no new top-level directories.
+Files land under the ROCm release's core tree (`/opt/rocm/core-<rel>`, surfaced
+at `/opt/rocm` by ROCm's alternatives) — no new top-level directories. The tree
+below uses `/opt/rocm` for brevity.
 
 ```
 /opt/rocm/
@@ -276,6 +270,7 @@ Files land directly under `/opt/rocm` — no new top-level directories.
 │   │   ├── FindMIVisionX.cmake      shim (MIVisionX#1761)
 │   │   ├── Findrocal.cmake          shim (rocAL#514)
 │   │   └── roccv/                   rocCV Config.cmake
+│   ├── pkgconfig/                   openvx, vx_rpp, rocal, roccv .pc files (-devel)
 │   └── rocm_sysdeps/lib/            bundled runtime deps — same dir as
 │       ├── libturbojpeg-rocm-vision.so*  ROCm's zlib, bzip2, liblzma ...
 │       ├── libjpeg-rocm-vision.so*
@@ -297,9 +292,12 @@ Files land directly under `/opt/rocm` — no new top-level directories.
     └── rocpyjpegdecode/             samples, tests
 ```
 
-The `.pth` is not under `/opt/rocm` and is not in the dist tarball. DEB writes
-`/usr/lib/python3/dist-packages/amdrocm-vision.pth`. RPM `%post` writes the
-same file into Python's `site-packages`.
+The `.pth` is not under `/opt/rocm` and is not in the dist tarball. Both the DEB
+and RPM ship it as a **tracked** file named `amdrocm-vision<rel>.pth` (for
+example `amdrocm-vision10.2.pth`) that lists `/opt/rocm/core-<rel>/lib` — the
+DEB under `/usr/lib/python3/dist-packages`, the RPM under Python 3.12's
+`site-packages`. No `%post` script is used, so the package owns the file and
+`rpm -e` / `apt remove` takes it with them (#67).
 
 All vision `.so` files have
 `$ORIGIN:$ORIGIN/../lib/rocm_sysdeps/lib:$ORIGIN/llvm/lib` baked into their
@@ -472,12 +470,6 @@ Workarounds live in vision-pack, not in the submodules.
   day upstream stops doing this, but the RPATH normalization in
   `rewrite_sonames.py` is what actually corrects it
   ([#45](https://github.com/kiritigowda/vision-pack/issues/45)).
-
-- **MIVisionX `hip_cu_mask_tests` not installed** — the test suite registers
-  `openvx_hip_cu_mask_remap_4K` but the `test` component did not ship the
-  script. Fix is upstream:
-  [MIVisionX#1766](https://github.com/ROCm/MIVisionX/pull/1766)
-  ([#42](https://github.com/kiritigowda/vision-pack/issues/42)).
 
 - **rocPyDecode `Development.Embed`** — upstream
   `find_package(Python3 Development)` needs `libpython.so`. manylinux's default
