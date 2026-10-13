@@ -30,6 +30,15 @@ on:
       - '.github/workflows/build.yml'
   pull_request:
     branches: [main, develop]
+    # Docs-only PRs don't touch any build/package/test path, so skip CI when a
+    # PR changes nothing but Markdown, docs/, or the license. A PR that also
+    # touches code still runs, since paths-ignore only skips when *every*
+    # changed file matches. (main is unprotected, so no required check is left
+    # pending by the skip.)
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
   workflow_call:
     inputs:
       ref:
