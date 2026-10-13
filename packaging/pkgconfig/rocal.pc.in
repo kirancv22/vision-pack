@@ -1,0 +1,9 @@
+prefix=/opt/rocm/core-@VP_ROCM_REL@
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: rocAL
+Description: AMD ROCm Augmentation Library (librocal)
+Version: @VP_ROCM@
+Libs: -L${libdir} -lrocal
+Cflags: -I${includedir}/rocal

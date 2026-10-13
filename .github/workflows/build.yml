@@ -336,6 +336,12 @@ jobs:
             echo "Staging ${proj} from ${stage}"
             cp -a "${stage}/." build/staging/
           done
+          # The submodules install ASan-only license folders
+          # (share/doc/{mivisionx,rocal,roccv}-asan) even though no ASan
+          # libraries are built or shipped. The multiarch tarball is a raw tar
+          # of this tree, so these leftovers would ship and imply ASan builds
+          # are present when they are not (#77). Drop them before packaging.
+          rm -rf build/staging/share/doc/*-asan
           # Install the bundled third-party runtime deps (protobuf, turbojpeg,
           # lmdb, libsndfile) → lib/rocm_sysdeps/lib/. These live in the
           # top-level build tree under the "runtime" component (see
@@ -370,6 +376,8 @@ jobs:
             "build/staging/lib/pyRocVideoDecode:rocPyDecode Python package" \
             "build/staging/lib/pyRocJpegDecode:rocPyJPEGDecode Python package" \
             "build/staging/share/rocpydecode/tests:rocPyDecode test sources" \
+            "build/staging/share/rocpydecode/samples/rocdecode/videodecoderaw.py:rocPyDecode videodecoderaw.py sample" \
+            "build/staging/share/rocpyjpegdecode/samples/rocjpeg/jpegdecodebatched.py:rocPyJPEGDecode jpegdecodebatched.py sample" \
             "build/staging/bin/runvx:mivisionx runvx tool" \
             "build/staging/share/rocal/test/data/images/AMD-tinyDataSet:rocAL test data" \
             "${SYSDEPS}/libturbojpeg-rocm-vision.so*:bundled turbojpeg" \
@@ -592,6 +600,55 @@ jobs:
               FAIL=1
             fi
           done
+          # Every bundled third-party project ships its compiled code in an
+          # artifact, so its license text must ship too (license compliance,
+          # #64). third-party/CMakeLists.txt stages each one; assert the texts
+          # are present in staging so a dropped install() can never silently
+          # ship binaries without their license.
+          echo "=== bundled third-party license texts present? ==="
+          SYSDEPS_LIC="build/staging/share/doc/amdrocm-vision-sysdeps/licenses"
+          ROCAL_LIC="build/staging/share/doc/amdrocm-rocal/licenses"
+          for LIC in \
+            "${SYSDEPS_LIC}/protobuf/LICENSE:protobuf" \
+            "${SYSDEPS_LIC}/libjpeg-turbo/LICENSE.md:libjpeg-turbo" \
+            "${SYSDEPS_LIC}/lmdb/LICENSE:lmdb" \
+            "${SYSDEPS_LIC}/libsndfile/COPYING:libsndfile" \
+            "${ROCAL_LIC}/pybind11/LICENSE:pybind11" \
+            "${ROCAL_LIC}/dlpack/LICENSE:dlpack" \
+            "${ROCAL_LIC}/rapidjson/license.txt:rapidjson"; do
+            LIC_PATH="${LIC%%:*}"
+            LIC_NAME="${LIC##*:}"
+            if [ -s "${LIC_PATH}" ]; then
+              echo "  ${LIC_NAME} license: OK"
+            else
+              echo "  ERROR: ${LIC_NAME} license text missing (${LIC_PATH})"
+              FAIL=1
+            fi
+          done
+          # Every shipped ELF must carry a GNU build ID (#76). amdclang/lld emits
+          # none by default; -Wl,--build-id=sha1 is passed at link time, but a
+          # subproject that overrides the linker flags would silently drop it and
+          # RPATH/library-presence checks would stay green. Assert it over the
+          # vision libs, runvx, the Python extension modules, and the bundled
+          # sysdeps so a regression fails here, not in a downstream debuginfo tool.
+          echo "=== every shipped ELF carries a GNU build ID? ==="
+          BUILDID_CHECKED=0
+          for ELF in build/staging/lib/*.so* build/staging/bin/runvx "${SYSDEPS}"/*.so*; do
+            { [ -f "${ELF}" ] && [ ! -L "${ELF}" ]; } || continue
+            # Only inspect ELF files (skip e.g. rocpycv.pyi text stubs).
+            readelf -h "${ELF}" >/dev/null 2>&1 || continue
+            BUILDID_CHECKED=$((BUILDID_CHECKED + 1))
+            if readelf -n "${ELF}" 2>/dev/null | grep -qi 'Build ID'; then
+              echo "  $(basename "${ELF}"): build ID OK"
+            else
+              echo "  ERROR: $(basename "${ELF}") has no GNU build ID"
+              FAIL=1
+            fi
+          done
+          if [ "${BUILDID_CHECKED}" -eq 0 ]; then
+            echo "  ERROR: no ELF files found to check for build IDs"
+            FAIL=1
+          fi
           [ "${FAIL}" -eq 0 ] || { echo "Staged install verification failed"; exit 1; }
 
       - name: Collect build metadata

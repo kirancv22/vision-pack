@@ -325,7 +325,61 @@ jobs:
       - name: Generate multiarch tarball
         run: |
           VER="${{ steps.version.outputs.version }}"
+          ROCM="${{ env.ROCM_VERSION }}"
+          REL="$(printf '%s\n' "$ROCM" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')"
           TARBALL="vision-pack-dist-linux-multiarch-${VER}.tar.gz"
+          # The tarball is a raw extract with no package manager to run install
+          # scripts, so users have no documented way to make the Python modules
+          # importable or to learn which features are unsupported (#69). Ship an
+          # install/usage README at the tarball root.
+          cat > staging/README-vision-pack.md << READ
+          # AMD ROCm Computer Vision extension pack (vision-pack)
+
+          Version: ${VER}  •  ROCm: ${ROCM}
+
+          This tarball is a raw extract of the \`/opt/rocm\` layout for the
+          libraries MIVisionX, rocAL, rocCV, and rocPyDecode. It is an extension
+          on top of a matching ROCm ${REL} SDK — it does not contain ROCm itself.
+
+          ## Install
+
+          Extract into the ROCm release's core tree:
+
+          \`\`\`bash
+          sudo tar -xzf ${TARBALL} -C /opt/rocm/core-${REL}
+          \`\`\`
+
+          All files live under the prefix \`/opt/rocm/core-${REL}\`
+          (lib/, include/, bin/, share/, and bundled runtime deps in
+          lib/rocm_sysdeps/lib/).
+
+          ## Make the Python modules importable
+
+          The Python bindings (rocal_pybind, rocpycv, rocpydecode,
+          rocpyjpegdecode) install flat into \`lib/\`, which is not on the
+          interpreter's default path. The DEB/RPM packages register it with a
+          \`.pth\`; from the tarball, set it yourself:
+
+          \`\`\`bash
+          export PYTHONPATH=/opt/rocm/core-${REL}/lib:\${PYTHONPATH}
+          \`\`\`
+
+          ## Requirements
+
+          - **Python 3.12 only** — the bindings are built for CPython 3.12
+            (\`...cpython-312...so\`). On a distro that defaults to another
+            Python (e.g. RHEL/UBI 9 → 3.9), install python3.12.
+          - **numpy** in the Python 3.12 environment.
+          - A matching ROCm ${REL} SDK (HIP, rpp, rocDecode, rocJPEG) on the host.
+
+          ## Unsupported features in this build
+
+          - **No OpenCV** — \`runvx\` has no image/video file I/O, so the
+            MIVisionX GDF samples that read images (canny.gdf, skintonedetect.gdf)
+            fail with "This build doesn't support CAMERA option".
+          - **No ffmpeg** — rocAL's ffmpeg reader is disabled.
+          - **No WebDataset** — rocAL's libtar-based reader is disabled.
+          READ
           tar -czf "${TARBALL}" -C staging/ .
           ls -lh "${TARBALL}"
           echo "TARBALL=${TARBALL}" >> "$GITHUB_ENV"
@@ -489,8 +543,29 @@ jobs:
           sudo apt install ./amdrocm-vision${REL}_*.deb
           \`\`\`
 
+          ## Install (RPM)
+          \`\`\`bash
+          # Python bindings are built for CPython 3.12; install python3.12 first
+          # on distros that default to another Python (e.g. RHEL/UBI 9 → 3.9).
+          sudo dnf install ./amdrocm-vision${REL}-*.rpm
+          \`\`\`
+
+          ## Install (multiarch tarball)
+          \`\`\`bash
+          sudo tar -xzf vision-pack-dist-linux-multiarch-${VER}.tar.gz -C /opt/rocm/core-${REL}
+          \`\`\`
+          See \`README-vision-pack.md\` at the tarball root for the full prefix,
+          PYTHONPATH, and requirements notes.
+
           Requires the ROCm ${REL} packages (a ${ROCM}~ nightly satisfies the bound).
           Files install under /opt/rocm/core-${REL}.
+
+          ## Usage notes
+          - Python bindings need **Python 3.12** and **numpy**. The DEB/RPM
+            register /opt/rocm/core-${REL}/lib on sys.path via a .pth; from the
+            tarball, \`export PYTHONPATH=/opt/rocm/core-${REL}/lib\`.
+          - Unsupported in this build: OpenCV (so runvx has no image/video I/O
+            and the image GDF samples fail), ffmpeg reader, and WebDataset reader.
           NOTES
 
           gh release create "${TAG}" \
@@ -546,8 +621,8 @@ jobs:
   #   2. Even with host copies of protobuf/turbojpeg/lmdb/sndfile installed on
   #      the default loader path, ldd resolves the bundled deps to
   #      /opt/rocm/lib/rocm_sysdeps/lib, not /usr/lib.
-  #   3. The amdrocm-vision.pth registers /opt/rocm/lib on sys.path so the
-  #      vision Python modules are importable with no PYTHONPATH.
+  #   3. The amdrocm-vision.pth registers /opt/rocm/core-<rel>/lib on sys.path
+  #      so the vision Python modules are importable with no PYTHONPATH.
   # ---------------------------------------------------------------------------
   smoke-test:
     needs: package
@@ -764,30 +839,27 @@ jobs:
           if [ "$OWNER" != "$PTH_PKG" ]; then
             echo "ERROR: ${PTH} is owned by ${OWNER}, not ${PTH_PKG}"; exit 1
           fi
-          if [ "$(tr -d '[:space:]' < "$PTH")" != "/opt/rocm/lib" ]; then
-            echo "ERROR: ${PTH} does not list /opt/rocm/lib"; exit 1
+          if [ "$(tr -d '[:space:]' < "$PTH")" != "${VISION_LIB}" ]; then
+            echo "ERROR: ${PTH} does not list ${VISION_LIB}"; exit 1
           fi
-          # site.py adds a .pth line only when that directory exists. The
-          # packages install under /opt/rocm/core-<major>.<minor>, and a ROCm
-          # install points /opt/rocm/lib at that directory with alternatives.
-          # This runner has no ROCm SDK, so make that link from the installed
-          # core. Leave an existing /opt/rocm/lib alone.
-          if [ ! -e /opt/rocm/lib ]; then
-            mkdir -p /opt/rocm
-            ln -s "${VISION_LIB}" /opt/rocm/lib
-            echo "/opt/rocm/lib -> ${VISION_LIB}"
-          fi
+          # site.py adds a .pth line only when that directory exists. The .pth
+          # now points straight at the package's own install tree
+          # (/opt/rocm/core-<major>.<minor>/lib = ${VISION_LIB}), which already
+          # exists after install, so site.py honors it with no /opt/rocm/lib
+          # alternatives symlink — the symlink is not guaranteed after a plain
+          # package install, which was exactly the import failure in #67.
           echo "=== ${PTH} (${PTH_PKG}) ==="
-          echo "=== /opt/rocm/lib on sys.path? ==="
-          python3 - <<'PY'
-          import sys
-          hit = any(p.rstrip("/") == "/opt/rocm/lib" for p in sys.path)
+          echo "=== ${VISION_LIB} on sys.path? ==="
+          VP_EXPECT="${VISION_LIB}" python3 - <<'PY'
+          import os, sys
+          want = os.environ["VP_EXPECT"].rstrip("/")
+          hit = any(p.rstrip("/") == want for p in sys.path)
           print("sys.path entries under /opt/rocm:",
                 [p for p in sys.path if "/opt/rocm" in p])
           if not hit:
-              print("ERROR: /opt/rocm/lib not on sys.path — .pth not honored")
+              print(f"ERROR: {want} not on sys.path — .pth not honored")
               sys.exit(1)
-          print(".pth registered /opt/rocm/lib on sys.path: OK")
+          print(f".pth registered {want} on sys.path: OK")
           PY
 
   # ---------------------------------------------------------------------------

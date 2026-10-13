@@ -1,0 +1,9 @@
+prefix=/opt/rocm/core-@VP_ROCM_REL@
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: rocCV
+Description: AMD ROCm GPU image-processing library (libroccv)
+Version: @VP_ROCM@
+Libs: -L${libdir} -lroccv
+Cflags: -I${includedir}/roccv

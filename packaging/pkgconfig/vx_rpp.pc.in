@@ -1,0 +1,10 @@
+prefix=/opt/rocm/core-@VP_ROCM_REL@
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: vx_rpp
+Description: AMD MIVisionX RPP OpenVX extension (libvx_rpp)
+Version: @VP_ROCM@
+Requires: openvx
+Libs: -L${libdir} -lvx_rpp
+Cflags: -I${includedir}/mivisionx

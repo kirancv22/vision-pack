@@ -141,12 +141,12 @@ set(CPACK_COMPONENT_ROCM_SYSDEPS_VISION_DESCRIPTION
     "installed into lib/rocm_sysdeps/lib/ alongside existing ROCm sysdeps.")
 set(CPACK_COMPONENT_PYTHONPATH_DISPLAY_NAME     "AMD ROCm vision Python path")
 set(CPACK_COMPONENT_PYTHONPATH_DESCRIPTION
-    "Registers /opt/rocm/lib on the Python path (.pth) so the vision Python "
-    "modules import without manual PYTHONPATH setup.")
+    "Registers /opt/rocm/core-${VP_ROCM_REL}/lib on the Python path (.pth) so the "
+    "vision Python modules import without manual PYTHONPATH setup.")
 set(CPACK_COMPONENT_PYTHONPATH-RPM_DISPLAY_NAME "AMD ROCm vision Python path")
 set(CPACK_COMPONENT_PYTHONPATH-RPM_DESCRIPTION
-    "Registers /opt/rocm/lib on the Python 3.12 path (.pth) so the vision Python "
-    "modules import without manual PYTHONPATH setup.")
+    "Registers /opt/rocm/core-${VP_ROCM_REL}/lib on the Python 3.12 path (.pth) so "
+    "the vision Python modules import without manual PYTHONPATH setup.")
 
 # ---------------------------------------------------------------------------
 # Install rules — paths match /opt/rocm exactly
@@ -158,6 +158,11 @@ set(CPACK_COMPONENT_PYTHONPATH-RPM_DESCRIPTION
 # namespace package (#55). Glob the files instead. Configure runs after the
 # staging tree is unpacked, and install(FILES) keeps SONAME symlinks as
 # symlinks.
+# Shared libraries ship 0755, not install(FILES)'s default 0644. On RHEL 8/9
+# with rpm < 4.18 a non-executable .so does not generate automatic
+# Provides/Requires, silently breaking rpm dependency resolution (#76). The
+# executable bit is harmless on the few non-.so files matched here (type stub,
+# SONAME symlinks — rpm/dpkg ignore mode on symlinks).
 function(vision_pack_install_matched component destination)
   file(GLOB _matched LIST_DIRECTORIES false ${ARGN})
   if(NOT _matched)
@@ -167,6 +172,10 @@ function(vision_pack_install_matched component destination)
   install(FILES ${_matched}
     DESTINATION "${destination}"
     COMPONENT "${component}"
+    PERMISSIONS
+      OWNER_READ OWNER_WRITE OWNER_EXECUTE
+      GROUP_READ GROUP_EXECUTE
+      WORLD_READ WORLD_EXECUTE
   )
 endfunction()
 
@@ -198,6 +207,12 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/shims/FindMIVisionX.cmake"
 install(DIRECTORY "${VISION_PACK_STAGING_DIR}/share/mivisionx"
     DESTINATION share COMPONENT mivisionx-dev OPTIONAL
     PATTERN test EXCLUDE
+)
+# runvx is built without OpenCV, so the image-I/O GDF samples (canny.gdf,
+# skintonedetect.gdf) shipped above cannot run. Ship a note beside them so a
+# user who finds the samples learns why they fail (#68).
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/notes/gdf-opencv-samples.README"
+    DESTINATION share/mivisionx/samples/gdf COMPONENT mivisionx-dev
 )
 # --- MIVisionX test ---
 install(DIRECTORY "${VISION_PACK_STAGING_DIR}/share/mivisionx/test"
@@ -288,12 +303,46 @@ install(DIRECTORY "${VISION_PACK_STAGING_DIR}/share/doc/amdrocm-pydecode/license
     DESTINATION "share/doc/${VP_PKG_PYDECODE}" COMPONENT rocpydecode OPTIONAL
 )
 # --- rocPyDecode test ---
+# The regression tests exec their sample scripts by relative path (e.g.
+# ../samples/rocdecode/videodecoderaw.py), so the samples must ship in the
+# same -test package or the tests fail with "can't open file" on a clean
+# install (#70).
 install(DIRECTORY "${VISION_PACK_STAGING_DIR}/share/rocpydecode/tests"
+    DESTINATION share/rocpydecode COMPONENT rocpydecode-test OPTIONAL
+)
+install(DIRECTORY "${VISION_PACK_STAGING_DIR}/share/rocpydecode/samples"
     DESTINATION share/rocpydecode COMPONENT rocpydecode-test OPTIONAL
 )
 install(DIRECTORY "${VISION_PACK_STAGING_DIR}/share/rocpyjpegdecode/tests"
     DESTINATION share/rocpyjpegdecode COMPONENT rocpydecode-test OPTIONAL
 )
+install(DIRECTORY "${VISION_PACK_STAGING_DIR}/share/rocpyjpegdecode/samples"
+    DESTINATION share/rocpyjpegdecode COMPONENT rocpydecode-test OPTIONAL
+)
+
+# --- pkg-config files for the public vision libraries (#77) ---
+# Upstream ships none, so non-CMake consumers have no standard way to discover
+# libopenvx/libvx_rpp/librocal/libroccv. Generate a .pc per library (prefix
+# baked to the core-<rel> install tree) and ship it in the matching -devel
+# package's lib/pkgconfig. CMake consumers keep using the Find-module shims.
+set(_vp_pc_dir "${CMAKE_CURRENT_BINARY_DIR}/pkgconfig")
+foreach(_pc_spec
+    "openvx:mivisionx-dev"
+    "vx_rpp:mivisionx-dev"
+    "rocal:rocal-dev"
+    "roccv:roccv-dev")
+  string(REPLACE ":" ";" _pc_pair "${_pc_spec}")
+  list(GET _pc_pair 0 _pc_name)
+  list(GET _pc_pair 1 _pc_component)
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/pkgconfig/${_pc_name}.pc.in"
+    "${_vp_pc_dir}/${_pc_name}.pc"
+    @ONLY
+  )
+  install(FILES "${_vp_pc_dir}/${_pc_name}.pc"
+    DESTINATION lib/pkgconfig COMPONENT "${_pc_component}"
+  )
+endforeach()
 
 # --- Bundled runtime deps → lib/rocm_sysdeps/lib/ (same as ROCm sysdeps) ---
 # These are installed alongside the existing zlib, bzip2 etc. in rocm_sysdeps.
@@ -330,16 +379,23 @@ install(DIRECTORY "${VISION_PACK_STAGING_DIR}/share/doc/amdrocm-vision-sysdeps/l
 # in the RPM, so the .deb does not gain the 3.12 path and the RPM does not
 # own Debian's directories.
 # Filename carries the ROCm release (for example amdrocm-vision10.2.pth) so
-# two releases can both own a .pth. Each file lists /opt/rocm/lib, which
-# alternatives point at the selected core.
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/python/amdrocm-vision.pth"
+# two releases can both own a .pth. Each file lists the release's own install
+# tree, /opt/rocm/core-<rel>/lib, where the Python modules actually land. An
+# earlier version listed /opt/rocm/lib and relied on alternatives pointing it
+# at the selected core, but after a default RPM install that symlink is not
+# guaranteed, so `import amd.rocal.pipeline` failed without a manual
+# PYTHONPATH (#67). Pointing straight at core-<rel>/lib imports with no setup.
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/python/amdrocm-vision.pth.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/python/amdrocm-vision${VP_ROCM_REL}.pth"
+    @ONLY
+)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/python/amdrocm-vision${VP_ROCM_REL}.pth"
     DESTINATION /usr/lib/python3/dist-packages
-    RENAME "amdrocm-vision${VP_ROCM_REL}.pth"
     COMPONENT pythonpath
 )
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/python/amdrocm-vision.pth"
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/python/amdrocm-vision${VP_ROCM_REL}.pth"
     DESTINATION /usr/lib/python3.12/site-packages
-    RENAME "amdrocm-vision${VP_ROCM_REL}.pth"
     COMPONENT pythonpath-rpm
 )
 

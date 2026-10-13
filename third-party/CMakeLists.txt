@@ -140,6 +140,8 @@ if(VISION_PACK_BUNDLE_PROTOBUF)
         -Wno-stringop-overread -Wno-error=stringop-overread
         -fstack-protector-strong)
       target_compile_definitions(${_t} PRIVATE _FORTIFY_SOURCE=2)
+      # Bake a GNU build ID into the shipped shared libs (#76).
+      target_link_options(${_t} PRIVATE -Wl,--build-id=sha1)
       # The install(CODE) glob below copies these .so's out of the build tree,
       # and file(INSTALL) performs no RPATH fixup, so the build-tree RPATH is
       # what ships. Apply the install RPATH at build time instead (#45).
@@ -191,6 +193,8 @@ if(VISION_PACK_BUNDLE_TURBOJPEG)
       -DENABLE_STATIC=OFF
       -DWITH_TURBOJPEG=ON
       -DWITH_SIMD=ON
+      # Bake a GNU build ID into the shipped shared libs (#76).
+      "-DCMAKE_SHARED_LINKER_FLAGS:STRING=-Wl,--build-id=sha1"
       "-DCMAKE_C_FLAGS:STRING=${_vp_harden_c_flags}"
       "-DCMAKE_CXX_FLAGS:STRING=${_vp_harden_cxx_flags}"
     BUILD_BYPRODUCTS
@@ -246,7 +250,7 @@ if(VISION_PACK_BUNDLE_LMDB)
       make -C "${CMAKE_CURRENT_SOURCE_DIR}/lmdb/libraries/liblmdb"
         "prefix=<INSTALL_DIR>"
         "CFLAGS=-O2 -fPIC ${_vp_harden_flags}"
-        "LDFLAGS=-pthread -Wl,-soname,liblmdb.so.0"
+        "LDFLAGS=-pthread -Wl,-soname,liblmdb.so.0 -Wl,--build-id=sha1"
     INSTALL_COMMAND
       make -C "${CMAKE_CURRENT_SOURCE_DIR}/lmdb/libraries/liblmdb"
         "prefix=<INSTALL_DIR>"
@@ -291,6 +295,8 @@ if(VISION_PACK_BUNDLE_LIBSNDFILE)
       # libsndfile 1.2.2 declares cmake_minimum_required(VERSION 3.1)
       # which CMake >= 3.30 rejects. Suppress the policy error.
       -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+      # Bake a GNU build ID into the shipped shared libs (#76).
+      "-DCMAKE_SHARED_LINKER_FLAGS:STRING=-Wl,--build-id=sha1"
       "-DCMAKE_C_FLAGS:STRING=${_vp_harden_c_flags}"
       "-DCMAKE_CXX_FLAGS:STRING=${_vp_harden_cxx_flags}"
     BUILD_BYPRODUCTS "${_sndfile_stage}/lib/libsndfile.so"

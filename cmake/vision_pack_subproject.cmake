@@ -196,9 +196,16 @@ function(vision_pack_subproject_activate)
         # image's GCC 8 libstdc++ come from libstdc++_nonshared.a and are
         # exported unless excluded, so they interpose libstdc++.so.6 (#74).
         # No-op on a normal libstdc++ that does not link that archive.
-        # SHARED covers libopenvx and libroccv; MODULE covers the pybind modules.
-        "-DCMAKE_SHARED_LINKER_FLAGS:STRING=-Wl,--exclude-libs,libstdc++_nonshared.a"
-        "-DCMAKE_MODULE_LINKER_FLAGS:STRING=-Wl,--exclude-libs,libstdc++_nonshared.a"
+        # SHARED covers libopenvx and libroccv; MODULE covers the pybind modules;
+        # EXE covers runvx.
+        # --build-id=sha1 bakes a GNU build ID into every shipped binary at link
+        # time (amdclang/lld emits none by default). Build IDs are needed for
+        # debuginfo splitting, debuginfod lookups, and crash-reporter symbol
+        # identification; doing it at link time is robust to CPackRPM disabling
+        # rpm's strip/build-id post-processing (#76).
+        "-DCMAKE_SHARED_LINKER_FLAGS:STRING=-Wl,--exclude-libs,libstdc++_nonshared.a -Wl,--build-id=sha1"
+        "-DCMAKE_MODULE_LINKER_FLAGS:STRING=-Wl,--exclude-libs,libstdc++_nonshared.a -Wl,--build-id=sha1"
+        "-DCMAKE_EXE_LINKER_FLAGS:STRING=-Wl,--build-id=sha1"
         ${_cmake_args}
 
       BUILD_COMMAND

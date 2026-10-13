@@ -247,14 +247,18 @@ sudo dpkg -i amdrocm-*.deb
 # RPM
 sudo rpm -i amdrocm-*.rpm
 
-# Dist tarball (no .pth — set PYTHONPATH)
-sudo tar -xzf vision-pack-dist-linux-multiarch-*.tar.gz -C /opt/rocm
-export PYTHONPATH=/opt/rocm/lib${PYTHONPATH:+:$PYTHONPATH}
+# Dist tarball (no .pth — set PYTHONPATH). Extract into the release's core
+# tree, matching the DEB/RPM install prefix. See README-vision-pack.md at the
+# tarball root for the full notes.
+sudo tar -xzf vision-pack-dist-linux-multiarch-*.tar.gz -C /opt/rocm/core-<rel>
+export PYTHONPATH=/opt/rocm/core-<rel>/lib${PYTHONPATH:+:$PYTHONPATH}
 ```
 
-Python modules live in `/opt/rocm/lib`. DEB/RPM ship `amdrocm-vision-pythonpath`
-so system Python can `import` them without `PYTHONPATH`. A venv, conda env, or
-the tarball still needs `PYTHONPATH` (or a copy of the `.pth`).
+DEB/RPM install under `/opt/rocm/core-<rel>` (for example `core-10.2`), so the
+Python modules live in `/opt/rocm/core-<rel>/lib`. The packages ship
+`amdrocm-vision-pythonpath` so system Python can `import` them without
+`PYTHONPATH`. A venv, conda env, or the tarball still needs `PYTHONPATH` (or a
+copy of the `.pth`).
 
 ### Install layout
 
@@ -326,10 +330,13 @@ the build if any shipped `.so` has a `NEEDED` on a plain SONAME for which the
 SDK provides a `librocm_sysdeps_*` equivalent.
 
 **Python path registration:** `amdrocm-vision-pythonpath` installs
-`amdrocm-vision.pth`, adding `/opt/rocm/lib` to system Python's `sys.path` so
-`import rocal` / `import rocpycv` / `import rocpydecode` work without
-`PYTHONPATH`. For venv/conda, copy the `.pth` into that environment's
-site-packages, or export `PYTHONPATH=/opt/rocm/lib`.
+`amdrocm-vision.pth`, adding `/opt/rocm/core-<rel>/lib` to system Python's
+`sys.path` so `import rocal` / `import rocpycv` / `import rocpydecode` work
+without `PYTHONPATH`. The `.pth` points straight at the package's own install
+tree rather than `/opt/rocm/lib`, which a ROCm alternatives symlink is not
+guaranteed to provide after a plain package install (#67). For venv/conda, copy
+the `.pth` into that environment's site-packages, or export
+`PYTHONPATH=/opt/rocm/core-<rel>/lib`.
 
 ---
 
@@ -424,9 +431,9 @@ The `package.yml` CI workflow produces:
 | `amdrocm-roccv-devel` | headers, roccvConfig.cmake, samples |
 | `amdrocm-roccv-test` | test sources + data |
 | `amdrocm-pydecode` | rocpydecode, rocpyjpegdecode, pyRocVideoDecode, pyRocJpegDecode |
-| `amdrocm-pydecode-test` | test sources (`share/rocpydecode/tests`, `share/rocpyjpegdecode/tests`) |
+| `amdrocm-pydecode-test` | test sources + sample scripts (`share/rocpydecode/{tests,samples}`, `share/rocpyjpegdecode/{tests,samples}`) |
 | `amdrocm-vision-sysdeps` | isolated libturbojpeg, libjpeg, libprotobuf, libprotobuf-lite, liblmdb, libsndfile (`-rocm-vision` SONAMEs) |
-| `amdrocm-vision-pythonpath` | `.pth` registering `/opt/rocm/lib` |
+| `amdrocm-vision-pythonpath` | `.pth` registering `/opt/rocm/core-<rel>/lib` |
 | `amdrocm-vision` | meta — all runtimes, including pydecode |
 | `amdrocm-vision-sdk` | meta — runtime + all `-devel` |
 | `amdrocm-vision-tests` | meta — sdk + all `-test` |
@@ -479,10 +486,11 @@ Workarounds live in vision-pack, not in the submodules.
   the package: a missing or empty `amdrocm-pydecode` fails CI.
   [rocPyDecode#290](https://github.com/ROCm/rocPyDecode/issues/290)
 
-- **Python bindings install to `/opt/rocm/lib` instead of site-packages** —
-  `amdrocm-vision-pythonpath` registers `/opt/rocm/lib` for system Python via a
-  `.pth` file. For venv/conda, set `PYTHONPATH=/opt/rocm/lib` or copy the `.pth`
-  into that environment's site-packages. Upstream site-packages fixes tracked at
+- **Python bindings install to `lib/` instead of site-packages** —
+  `amdrocm-vision-pythonpath` registers `/opt/rocm/core-<rel>/lib` for system
+  Python via a `.pth` file. For venv/conda, set
+  `PYTHONPATH=/opt/rocm/core-<rel>/lib` or copy the `.pth` into that
+  environment's site-packages. Upstream site-packages fixes tracked at
   [rocAL#514](https://github.com/ROCm/rocAL/issues/514),
   [rocPyDecode#285](https://github.com/ROCm/rocPyDecode/issues/285)
 
@@ -495,6 +503,15 @@ Workarounds live in vision-pack, not in the submodules.
 
 - **rocAL ffmpeg reader disabled** — requires libavcodec/avformat chain,
   excluded by design (`-DCMAKE_DISABLE_FIND_PACKAGE_FFmpeg=ON`).
+
+- **runvx built without OpenCV** — OpenCV is excluded by design (heavy
+  transitive deps), so `runvx` has no image/video I/O. The MIVisionX GDF
+  samples that read image files — `share/mivisionx/samples/gdf/canny.gdf` and
+  `skintonedetect.gdf` — therefore fail with
+  `ERROR: This build doesn't support CAMERA option`. They ship as GDF graph
+  references; to run them, rebuild `runvx` against an OpenCV-enabled MIVisionX.
+  A note ships beside the samples
+  ([#68](https://github.com/kiritigowda/vision-pack/issues/68)).
 
 ---
 

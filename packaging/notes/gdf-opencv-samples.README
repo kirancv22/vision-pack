@@ -1,0 +1,15 @@
+runvx image-I/O GDF samples — not runnable in this build
+========================================================
+
+This vision-pack build ships `runvx` WITHOUT OpenCV (OpenCV is excluded by
+design to avoid its heavy transitive dependencies). `runvx` therefore has no
+image/video file I/O.
+
+The GDF samples in this directory that read image files — `canny.gdf` and
+`skintonedetect.gdf` — need an OpenCV-enabled `runvx`. Running them against the
+shipped `runvx` fails with:
+
+    ERROR: This build doesn't support CAMERA option
+
+They are kept as GDF graph references. To run them, rebuild `runvx` against an
+OpenCV-enabled MIVisionX. See vision-pack issue #68.

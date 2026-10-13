@@ -11,14 +11,17 @@ extract).
 - A Docker engine (rootless or with `sudo`).
 - The host user must be in the `video` and `render` groups, or those host GIDs
   must be passed into the container.
-- A local apt repository built from the vision-pack `.deb` files. Example:
+- A local apt repository built from the vision-pack `.deb` files. The
+  in-container script adds it as a **flat** repo
+  (`deb [arch=amd64 trusted=yes] file://${VISION_REPO} ./`), which expects the
+  `Packages` index at the repository root — not a `dists/` tree. Example:
 
 ```bash
-mkdir -p local-apt-repo/dists/stable/main/binary-amd64
+mkdir -p local-apt-repo
 cp *.deb local-apt-repo/
 cd local-apt-repo
-dpkg-scanpackages . /dev/null > dists/stable/main/binary-amd64/Packages
-gzip -k -f dists/stable/main/binary-amd64/Packages
+dpkg-scanpackages . /dev/null > Packages
+gzip -k -f Packages
 ```
 
 ### Files
