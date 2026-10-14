@@ -114,7 +114,8 @@ vision-pack/
     ├── protobuf/       v3.21.12  runtime — ships in lib/rocm_sysdeps/lib/
     ├── libjpeg-turbo/  3.2.0     runtime — ships in lib/rocm_sysdeps/lib/
     ├── lmdb/           0.9.31    runtime — ships in lib/rocm_sysdeps/lib/
-    └── libsndfile/     1.2.2     runtime — ships in lib/rocm_sysdeps/lib/
+    ├── libsndfile/     1.2.2     runtime — ships in lib/rocm_sysdeps/lib/
+    └── ffmpeg/         6.1.1     runtime — shallow submodule, private libav* SONAMEs
 ```
 
 ---
@@ -204,7 +205,7 @@ cmake -B build -S . \
 ```
 
 > Disabling rocAL automatically disables its bundled runtime deps
-> (protobuf, turbojpeg, lmdb, libsndfile).
+> (protobuf, turbojpeg, lmdb, libsndfile, ffmpeg).
 
 ### Bundled dependency flags
 
@@ -219,7 +220,8 @@ cmake -B build -S . \
     -DVISION_PACK_BUNDLE_PROTOBUF=OFF \
     -DVISION_PACK_BUNDLE_TURBOJPEG=OFF \
     -DVISION_PACK_BUNDLE_LMDB=OFF \
-    -DVISION_PACK_BUNDLE_LIBSNDFILE=OFF
+    -DVISION_PACK_BUNDLE_LIBSNDFILE=OFF \
+    -DVISION_PACK_BUNDLE_FFMPEG=OFF
 ```
 
 ---
@@ -277,7 +279,11 @@ below uses `/opt/rocm` for brevity.
 │       ├── libprotobuf-rocm-vision.so*
 │       ├── libprotobuf-lite-rocm-vision.so*
 │       ├── liblmdb-rocm-vision.so*
-│       └── libsndfile-rocm-vision.so*
+│       ├── libsndfile-rocm-vision.so*
+│       ├── libavcodec-rocm-vision.so*
+│       ├── libavformat-rocm-vision.so*
+│       ├── libavutil-rocm-vision.so*
+│       └── libswscale-rocm-vision.so*
 ├── include/
 │   ├── mivisionx/                   OpenVX + AMD extension headers
 │   ├── rocal/                       rocAL C++ API headers
@@ -403,13 +409,14 @@ are real failures.
 | libjpeg-turbo | 3.2.0 | BSD/IJG | `lib/rocm_sysdeps/lib/` | rocAL links libturbojpeg.so dynamically; also ships the isolated libjpeg for rocAL's raw libjpeg API (`jpeg_std_error`) |
 | lmdb | 0.9.31 | OpenLDAP | `lib/rocm_sysdeps/lib/` | rocAL Caffe/Caffe2 LMDB reader; pinned to 0.9.x (matches Ubuntu's `liblmdb0`) since LMDB 1.0's on-disk format cannot open 0.9-format databases |
 | libsndfile | 1.2.2 | LGPL-2.1 | `lib/rocm_sysdeps/lib/` | rocAL audio augmentation; built without external codecs |
+| ffmpeg | 6.1.1 | LGPL-2.1 | `lib/rocm_sysdeps/lib/` | shallow submodule; private `libavcodec`/`libavformat`/`libavutil`/`libswscale` (`--build-suffix=-rocm-vision`); H.264 and HEVC software decode |
 
-**Excluded by design:** ffmpeg (libavcodec/avformat/avutil/swscale), OpenCV, and
-libtar. rocAL has no build switch for these — it picks ffmpeg/libtar up via
-`find_package(... QUIET)` — so the build passes
-`-DCMAKE_DISABLE_FIND_PACKAGE_FFmpeg=ON` and
-`-DCMAKE_DISABLE_FIND_PACKAGE_LibTar=ON`. OpenCV needs no flag; current rocAL
-never looks for it.
+**Excluded by design:** OpenCV and libtar. rocAL picks libtar up via
+`find_package(LibTar QUIET)`, so the build passes
+`-DCMAKE_DISABLE_FIND_PACKAGE_LibTar=ON`. Set `VISION_PACK_BUNDLE_FFMPEG=OFF`
+to skip the private FFmpeg build; that also passes
+`-DCMAKE_DISABLE_FIND_PACKAGE_FFmpeg=ON` so a host libav* is not linked.
+OpenCV needs no flag; current rocAL never looks for it.
 
 ---
 
@@ -430,7 +437,7 @@ The `package.yml` CI workflow produces:
 | `amdrocm-roccv-test` | test sources + data |
 | `amdrocm-pydecode` | rocpydecode, rocpyjpegdecode, pyRocVideoDecode, pyRocJpegDecode |
 | `amdrocm-pydecode-test` | test sources + sample scripts (`share/rocpydecode/{tests,samples}`, `share/rocpyjpegdecode/{tests,samples}`) |
-| `amdrocm-vision-sysdeps` | isolated libturbojpeg, libjpeg, libprotobuf, libprotobuf-lite, liblmdb, libsndfile (`-rocm-vision` SONAMEs) |
+| `amdrocm-vision-sysdeps` | isolated libturbojpeg, libjpeg, libprotobuf, libprotobuf-lite, liblmdb, libsndfile, libavcodec, libavformat, libavutil, libswscale (`-rocm-vision` SONAMEs) |
 | `amdrocm-vision-pythonpath` | `.pth` registering `/opt/rocm/core-<rel>/lib` |
 | `amdrocm-vision` | meta — all runtimes, including pydecode |
 | `amdrocm-vision-sdk` | meta — runtime + all `-devel` |
@@ -493,8 +500,10 @@ Workarounds live in vision-pack, not in the submodules.
 - **rocAL WebDataset reader disabled** — requires libtar, excluded to keep
   the build self-contained (`-DCMAKE_DISABLE_FIND_PACKAGE_LibTar=ON`).
 
-- **rocAL ffmpeg reader disabled** — requires libavcodec/avformat chain,
-  excluded by design (`-DCMAKE_DISABLE_FIND_PACKAGE_FFmpeg=ON`).
+- **rocAL ffmpeg reader** uses the private libav* libraries shipped in
+  `amdrocm-vision-sysdeps` (`libavcodec-rocm-vision.so.60`,
+  `libavformat-rocm-vision.so.60`, `libavutil-rocm-vision.so.58`,
+  `libswscale-rocm-vision.so.7`).
 
 - **runvx built without OpenCV** — OpenCV is excluded by design (heavy
   transitive deps), so `runvx` has no image/video I/O. The MIVisionX GDF

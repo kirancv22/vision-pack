@@ -33,7 +33,7 @@ expected_contents() {
     amdrocm-roccv-test)         echo 'share/roccv/test/' ;;
     amdrocm-pydecode)           echo 'lib/rocpydecode.*\.so lib/rocpyjpegdecode.*\.so lib/pyRocVideoDecode/ lib/pyRocJpegDecode/' ;;
     amdrocm-pydecode-test)      echo 'share/rocpydecode/tests/ share/rocpyjpegdecode/tests/' ;;
-    amdrocm-vision-sysdeps)     echo 'libturbojpeg-rocm-vision\.so libjpeg-rocm-vision\.so libprotobuf-rocm-vision\.so liblmdb-rocm-vision\.so libsndfile-rocm-vision\.so' ;;
+    amdrocm-vision-sysdeps)     echo 'libturbojpeg-rocm-vision\.so libjpeg-rocm-vision\.so libprotobuf-rocm-vision\.so liblmdb-rocm-vision\.so libsndfile-rocm-vision\.so libavcodec-rocm-vision\.so libavformat-rocm-vision\.so libavutil-rocm-vision\.so libswscale-rocm-vision\.so' ;;
     amdrocm-vision-pythonpath)  echo 'dist-packages/amdrocm-vision.*\.pth' ;;
     *)                          echo '' ;;
   esac
@@ -227,7 +227,8 @@ check_package() {
       for dep in "libprotobuf-rocm-vision:protobuf" \
                  "libturbojpeg-rocm-vision:libjpeg-turbo" \
                  "liblmdb-rocm-vision:lmdb" \
-                 "libsndfile-rocm-vision:libsndfile"; do
+                 "libsndfile-rocm-vision:libsndfile" \
+                 "libavcodec-rocm-vision:ffmpeg"; do
         so="${dep%%:*}"; lic="${dep##*:}"
         echo "$paths" | grep -qE "${so}\.so" || continue
         if echo "$paths" | grep -qE "share/doc/amdrocm-vision-sysdeps${rel}/licenses/${lic}/"; then
@@ -240,7 +241,9 @@ check_package() {
       #   libjpeg-turbo — LICENSE.md defers the IJG text to README.ijg.
       #   lmdb          — LICENSE (OpenLDAP) needs the COPYRIGHT notice.
       for want in "libjpeg-turbo/README.ijg:libturbojpeg-rocm-vision" \
-                  "lmdb/COPYRIGHT:liblmdb-rocm-vision"; do
+                  "lmdb/COPYRIGHT:liblmdb-rocm-vision" \
+                  "ffmpeg/COPYING.LGPLv2.1:libavcodec-rocm-vision" \
+                  "ffmpeg/LICENSE.md:libavcodec-rocm-vision"; do
         lic="${want%%:*}"; so="${want##*:}"
         echo "$paths" | grep -qE "${so}\.so" || continue
         if echo "$paths" | grep -qE "share/doc/amdrocm-vision-sysdeps${rel}/licenses/${lic}"; then
@@ -344,7 +347,7 @@ check_package() {
   if [ "$pkg" = "amdrocm-vision-sysdeps" ]; then
     local stock
     stock="$(echo "$paths" \
-      | grep -E '/lib(protobuf|protobuf-lite|turbojpeg|jpeg|lmdb|sndfile)\.so' || true)"
+      | grep -E '/lib(protobuf|protobuf-lite|turbojpeg|jpeg|lmdb|sndfile|avcodec|avformat|avutil|swscale)\.so' || true)"
     if [ -n "$stock" ]; then
       echo "  ERROR: sysdeps ships un-isolated stock SONAMEs:"
       echo "$stock" | sed 's/^/      /'; fail=1

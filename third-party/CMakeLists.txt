@@ -13,14 +13,15 @@ include(CMakeDependentOption)
 #   share/doc/<name>/          LICENSE, changelogs
 #   bin/                       executables (runvx)
 #
-# Bundled runtime deps (turbojpeg, lmdb, libsndfile, protobuf):
+# Bundled runtime deps (turbojpeg, lmdb, libsndfile, protobuf, ffmpeg):
 #   lib/rocm_sysdeps/lib/      same prefix ROCm uses for zlib, bzip2, etc.
 #
 # RPATH on all vision .so files:
 #   $ORIGIN/../lib/rocm_sysdeps/lib   (finds our bundled deps + existing ROCm sysdeps)
 #   $ORIGIN                            (finds sibling libs: libopenvx -> libvx_rpp)
 #
-# ffmpeg and OpenCV are excluded — too many transitive deps.
+# OpenCV is excluded — too many transitive deps. FFmpeg is a trimmed LGPL
+# build (private *-rocm-vision SONAMEs) when VISION_PACK_BUNDLE_FFMPEG is on.
 # ---------------------------------------------------------------------------
 
 # The rocm_sysdeps/ subdir is already the ROCm convention — no new directories.
@@ -56,6 +57,8 @@ cmake_dependent_option(VISION_PACK_BUNDLE_LMDB
   "Build LMDB from bundled source"           ON "VISION_PACK_ENABLE_ROCAL" OFF)
 cmake_dependent_option(VISION_PACK_BUNDLE_LIBSNDFILE
   "Build libsndfile from bundled source"     ON "VISION_PACK_ENABLE_ROCAL" OFF)
+cmake_dependent_option(VISION_PACK_BUNDLE_FFMPEG
+  "Build a private FFmpeg (libav*) from the bundled checkout" ON "VISION_PACK_ENABLE_ROCAL" OFF)
 
 # ---------------------------------------------------------------------------
 # pybind11 v3.1.0  (build-time only — provides the CMake CONFIG package that
@@ -314,6 +317,78 @@ elseif(VISION_PACK_ENABLE_ROCAL)
   find_package(SndFile QUIET)
 endif()
 
+# ---------------------------------------------------------------------------
+# FFmpeg 6.1.1 → lib/rocm_sysdeps/lib/libav*-rocm-vision.so*
+#
+# rocAL's video reader needs libavcodec, libavformat, libavutil, and
+# libswscale, including the native H.264/HEVC decoders (LGPL). This is one
+# shared build with --build-suffix=-rocm-vision, so the SONAMEs are already
+# private. Do not add these stems to rewrite_sonames.py: that script renames
+# stock libavcodec.so and would not see these files.
+#
+# No --enable-gpl and no external encoders (libx264 and the rest). The
+# checkout is the shallow submodule third-party/ffmpeg (tag n6.1.1), fetched
+# at clone time. --disable-all already drops programs, docs, and every library
+# except libavutil, so those switches are not repeated. Assembly is off so the
+# build does not need nasm. FFmpeg's configure/make expand $ORIGIN before
+# the linker sees it, so the runpath is not passed here. rewrite_sonames.py
+# sets $ORIGIN on every real library in lib/rocm_sysdeps/lib, the same pass
+# that corrects turbojpeg and protobuf.
+# ---------------------------------------------------------------------------
+if(VISION_PACK_BUNDLE_FFMPEG)
+  set(_ff_stage "${_vp_sysdeps_stage}")
+  set(_ff_src "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg")
+  ExternalProject_Add(ffmpeg_external
+    SOURCE_DIR   "${_ff_src}"
+    BINARY_DIR   "${CMAKE_BINARY_DIR}/third-party/ffmpeg-build"
+    INSTALL_DIR  "${_ff_stage}"
+    # The shallow submodule is already on disk. Leave these empty so the build
+    # does not fetch FFmpeg again.
+    DOWNLOAD_COMMAND ""
+    UPDATE_COMMAND ""
+    CONFIGURE_COMMAND <SOURCE_DIR>/configure
+      --prefix=<INSTALL_DIR>
+      --libdir=<INSTALL_DIR>/lib
+      --cc=${CMAKE_C_COMPILER}
+      --cxx=${CMAKE_CXX_COMPILER}
+      --disable-all
+      --disable-autodetect
+      --disable-iconv
+      --disable-static
+      --enable-shared
+      --enable-pic
+      --disable-x86asm
+      --disable-network
+      --enable-avcodec
+      --enable-avformat
+      --enable-swscale
+      --enable-protocol=file
+      --enable-demuxer=mov,matroska,flv
+      --enable-parser=h264,hevc
+      --enable-decoder=h264,hevc
+      --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb
+      --build-suffix=-rocm-vision
+      "--extra-cflags=${_vp_harden_c_flags} -O3"
+      --extra-ldflags=-Wl,--build-id=sha1
+    BUILD_COMMAND make -j${VP_NPROC}
+    BUILD_BYPRODUCTS
+      "${_ff_stage}/lib/libavcodec-rocm-vision.so"
+      "${_ff_stage}/lib/libavformat-rocm-vision.so"
+      "${_ff_stage}/lib/libavutil-rocm-vision.so"
+      "${_ff_stage}/lib/libswscale-rocm-vision.so"
+  )
+  install(DIRECTORY "${_ff_stage}/lib/"
+    DESTINATION "${VP_SYSDEPS_LIBDIR}"
+    COMPONENT runtime
+    FILES_MATCHING
+      PATTERN "libavcodec-rocm-vision.so*"
+      PATTERN "libavformat-rocm-vision.so*"
+      PATTERN "libavutil-rocm-vision.so*"
+      PATTERN "libswscale-rocm-vision.so*"
+  )
+  message(STATUS "[vision-pack] FFmpeg 6.1.1 (private *-rocm-vision) → ${VP_SYSDEPS_LIBDIR}")
+endif()
+
 # Expose staging prefix for top-level CMakeLists → rocAL cmake args
 set(VP_BUNDLED_DEPS_STAGE "${_vp_sysdeps_stage}"
     CACHE PATH "Staging prefix for bundled runtime deps" FORCE)
@@ -352,6 +427,16 @@ endif()
 if(VISION_PACK_BUNDLE_LIBSNDFILE)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/libsndfile/COPYING"
     DESTINATION "${_vp_sysdeps_licdir}/libsndfile" COMPONENT runtime)
+endif()
+if(VISION_PACK_BUNDLE_FFMPEG)
+  # LICENSE.md points at COPYING.LGPLv2.1 and carries the IJG credit for the
+  # three libjpeg-derived files compiled into libavcodec. This build does not
+  # pass --enable-gpl or --enable-version3, so the GPL and LGPLv3 texts do not
+  # apply. The package job does not check out submodules, so stage both here.
+  install(FILES
+      "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg/LICENSE.md"
+      "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg/COPYING.LGPLv2.1"
+    DESTINATION "${_vp_sysdeps_licdir}/ffmpeg" COMPONENT runtime)
 endif()
 if(VISION_PACK_BUNDLE_PYBIND11)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pybind11/LICENSE"

@@ -356,6 +356,10 @@ vision_pack_install_matched(rocm-sysdeps-vision lib/rocm_sysdeps/lib
   "${VISION_PACK_STAGING_DIR}/lib/rocm_sysdeps/lib/libprotobuf-lite-rocm-vision.so*"
   "${VISION_PACK_STAGING_DIR}/lib/rocm_sysdeps/lib/liblmdb-rocm-vision.so*"
   "${VISION_PACK_STAGING_DIR}/lib/rocm_sysdeps/lib/libsndfile-rocm-vision.so*"
+  "${VISION_PACK_STAGING_DIR}/lib/rocm_sysdeps/lib/libavcodec-rocm-vision.so*"
+  "${VISION_PACK_STAGING_DIR}/lib/rocm_sysdeps/lib/libavformat-rocm-vision.so*"
+  "${VISION_PACK_STAGING_DIR}/lib/rocm_sysdeps/lib/libavutil-rocm-vision.so*"
+  "${VISION_PACK_STAGING_DIR}/lib/rocm_sysdeps/lib/libswscale-rocm-vision.so*"
 )
 # Licenses of the bundled deps shipped in this package (staged by third-party/).
 install(DIRECTORY "${VISION_PACK_STAGING_DIR}/share/doc/amdrocm-vision-sysdeps/licenses"

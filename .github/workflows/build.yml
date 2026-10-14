@@ -392,7 +392,11 @@ jobs:
             "${SYSDEPS}/libturbojpeg-rocm-vision.so*:bundled turbojpeg" \
             "${SYSDEPS}/libprotobuf-rocm-vision.so*:bundled protobuf" \
             "${SYSDEPS}/liblmdb-rocm-vision.so*:bundled lmdb" \
-            "${SYSDEPS}/libsndfile-rocm-vision.so*:bundled libsndfile"; do
+            "${SYSDEPS}/libsndfile-rocm-vision.so*:bundled libsndfile" \
+            "${SYSDEPS}/libavcodec-rocm-vision.so*:bundled libavcodec" \
+            "${SYSDEPS}/libavformat-rocm-vision.so*:bundled libavformat" \
+            "${SYSDEPS}/libavutil-rocm-vision.so*:bundled libavutil" \
+            "${SYSDEPS}/libswscale-rocm-vision.so*:bundled libswscale"; do
             PATH_CHECK="${CHECK%%:*}"
             LABEL="${CHECK##*:}"
             if ls ${PATH_CHECK} >/dev/null 2>&1; then
@@ -449,14 +453,21 @@ jobs:
             echo "  ERROR: librocal.so does not list libprotobuf-rocm-vision.so as NEEDED"
             FAIL=1
           fi
+          if echo "${NEEDED}" | grep -qi "libavcodec-rocm-vision" \
+              && echo "${NEEDED}" | grep -qi "libswscale-rocm-vision"; then
+            echo "  librocal links private ffmpeg: OK"
+          else
+            echo "  ERROR: librocal.so does not list libavcodec-rocm-vision and libswscale-rocm-vision as NEEDED"
+            FAIL=1
+          fi
           # SxS guarantee (#4): no stock bundled SONAME may remain NEEDED — a
           # leftover stock name is exactly what a host copy could shadow.
           echo "=== librocal.so free of stock bundled SONAMEs? ==="
           if echo "${NEEDED}" \
-              | grep -Ei "lib(protobuf|protobuf-lite|turbojpeg|jpeg|lmdb|sndfile)\.so" \
+              | grep -Ei "lib(protobuf|protobuf-lite|turbojpeg|jpeg|lmdb|sndfile|avcodec|avformat|avutil|swscale)\.so" \
               | grep -qiv "rocm-vision"; then
             echo "  ERROR: librocal.so still references a stock bundled SONAME:"
-            echo "${NEEDED}" | grep -Ei "lib(protobuf|protobuf-lite|turbojpeg|jpeg|lmdb|sndfile)\.so" \
+            echo "${NEEDED}" | grep -Ei "lib(protobuf|protobuf-lite|turbojpeg|jpeg|lmdb|sndfile|avcodec|avformat|avutil|swscale)\.so" \
               | grep -iv "rocm-vision"
             FAIL=1
           else

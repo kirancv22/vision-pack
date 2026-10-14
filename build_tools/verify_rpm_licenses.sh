@@ -27,7 +27,8 @@ license_for() {
   base="$(printf '%s\n' "$1" | sed -E 's/[0-9]+\.[0-9]+$//')"
   case "$base" in
     amdrocm-vision-sysdeps)
-      # protobuf BSD-3, libjpeg-turbo IJG/BSD-3/Zlib, lmdb OpenLDAP, libsndfile LGPL-2.1.
+      # protobuf BSD-3, libjpeg-turbo IJG/BSD-3/Zlib, lmdb OpenLDAP,
+      # libsndfile and the private FFmpeg build LGPL-2.1.
       echo "BSD-3-Clause AND IJG AND Zlib AND OLDAP-2.8 AND LGPL-2.1-or-later" ;;
     amdrocm-rocal|amdrocm-roccv|amdrocm-pydecode)
       # MIT vision lib + bundled pybind11 (BSD-3) + dlpack (Apache-2.0)

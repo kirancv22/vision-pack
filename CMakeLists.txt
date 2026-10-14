@@ -67,10 +67,11 @@ set(VP_BUILD_PARALLEL_LEVEL "${VP_NPROC}" CACHE STRING
 
 # ---------------------------------------------------------------------------
 # Third-party bundled dependencies.
-# Compiled runtime deps (turbojpeg, protobuf, lmdb, libsndfile) install to
-# lib/rocm_sysdeps/lib/ — the same dir ROCm uses for zlib, bzip2, etc.
+# Compiled runtime deps (turbojpeg, protobuf, lmdb, libsndfile, ffmpeg) install
+# to lib/rocm_sysdeps/lib/ — the same dir ROCm uses for zlib, bzip2, etc.
 # Header-only deps (pybind11, dlpack, rapidjson) are build-time only.
-# ffmpeg and OpenCV are excluded by design (heavy transitive deps).
+# OpenCV is excluded by design (heavy transitive deps). FFmpeg is the shallow
+# submodule third-party/ffmpeg, built with private *-rocm-vision SONAMEs.
 # ---------------------------------------------------------------------------
 add_subdirectory(third-party)
 
@@ -144,7 +145,8 @@ if(VISION_PACK_ENABLE_ROCPYDECODE)
 endif()
 
 # rocAL — depends on mivisionx stage + bundled runtime deps.
-# ffmpeg and OpenCV disabled — excluded by design.
+# OpenCV stays out. WebDataset (libtar) stays disabled. FFmpeg comes from the
+# private build in third-party/ when VISION_PACK_BUNDLE_FFMPEG is on.
 if(VISION_PACK_ENABLE_ROCAL)
   set(_rocal_deps "")
   set(_rocal_extra_deps "")
@@ -173,14 +175,12 @@ if(VISION_PACK_ENABLE_ROCAL)
     -DBACKEND=HIP
     -DGPU_SUPPORT=ON
     -DBUILD_PYPACKAGE=ON
-    # ffmpeg (video reader) and WebDataset (libtar) are disabled by design to
-    # keep the tree self-contained. rocAL has no BUILD_WITH_* switches for these;
-    # it enables each opportunistically via find_package(<Pkg> QUIET). So a stray
-    # host ffmpeg/libtar-dev would silently link an untracked runtime dep (and
-    # libtar flips on -DENABLE_WDS). Disable the finds so the outcome is
-    # deterministic regardless of the build host (#38). OpenCV needs no flag —
-    # current rocAL never looks for it.
-    -DCMAKE_DISABLE_FIND_PACKAGE_FFmpeg=ON
+    # WebDataset (libtar) stays disabled. rocAL has no BUILD_WITH_* switch; it
+    # enables the reader via find_package(LibTar QUIET), and a stray host
+    # libtar-dev would silently link an untracked runtime dep and flip on
+    # -DENABLE_WDS (#38). FFmpeg is handled below: the private build is passed
+    # in, or the find is disabled so a host libav* is not linked.
+    # OpenCV needs no flag — current rocAL never looks for it.
     -DCMAKE_DISABLE_FIND_PACKAGE_LibTar=ON
     "-DCMAKE_INSTALL_RPATH=${VP_INSTALL_RPATH}"
     -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF
@@ -244,6 +244,40 @@ if(VISION_PACK_ENABLE_ROCAL)
     list(APPEND _rocal_cmake_args "-DSndFile_ROOT=${_bstage}")
   endif()
 
+  if(VISION_PACK_BUNDLE_FFMPEG)
+    list(APPEND _rocal_extra_deps ffmpeg_external)
+    set(_ff_lib "${_bstage}/lib")
+    set(_ff_inc "${_bstage}/include")
+    # The rocAL submodule on this tree searches stock libav* names and ignores
+    # FFMPEG_PATH. ROCm/rocAL#519 searches <FFMPEG_PATH> for the
+    # *-rocm-vision names only. Pre-seeding FindFFmpeg's result cache keeps
+    # today's submodule on the private libraries; FFMPEG_PATH is the same
+    # prefix #519 will use once that commit is in the submodule.
+    # vision_pack_subproject turns "|" back into ";" (LIST_SEPARATOR), so the
+    # library list stays one cmake argument here and a real list inside rocAL.
+    # The version cache entries are FFmpeg 6.1.1. They make rocAL's
+    # USE_AVCODEC_GREATER_THAN_58_134 check deterministic, including when the
+    # finder returns before pkg-config.
+    list(APPEND _rocal_cmake_args
+      "-DFFMPEG_PATH=${_bstage}"
+      "-DFFMPEG_INCLUDE_DIR=${_ff_inc}"
+      "-DAVCODEC_INCLUDE_DIR=${_ff_inc}"
+      "-DAVFORMAT_INCLUDE_DIR=${_ff_inc}"
+      "-DAVUTIL_INCLUDE_DIR=${_ff_inc}"
+      "-DSWSCALE_INCLUDE_DIR=${_ff_inc}"
+      "-DAVCODEC_LIBRARY=${_ff_lib}/libavcodec-rocm-vision.so"
+      "-DAVFORMAT_LIBRARY=${_ff_lib}/libavformat-rocm-vision.so"
+      "-DAVUTIL_LIBRARY=${_ff_lib}/libavutil-rocm-vision.so"
+      "-DSWSCALE_LIBRARY=${_ff_lib}/libswscale-rocm-vision.so"
+      "-DFFMPEG_LIBRARIES=${_ff_lib}/libavcodec-rocm-vision.so|${_ff_lib}/libavformat-rocm-vision.so|${_ff_lib}/libavutil-rocm-vision.so|${_ff_lib}/libswscale-rocm-vision.so"
+      "-D_FFMPEG_AVCODEC_VERSION=60.31.102"
+      "-D_FFMPEG_AVFORMAT_VERSION=60.16.100"
+      "-D_FFMPEG_AVUTIL_VERSION=58.29.100"
+    )
+  else()
+    list(APPEND _rocal_cmake_args -DCMAKE_DISABLE_FIND_PACKAGE_FFmpeg=ON)
+  endif()
+
   # rocAL_pybind's find_package(DLPACK QUIET) uses rocAL's own FindDLPACK.cmake,
   # which searches ${DLPACK_DIR}/include for dlpack/dlpack.h — it does NOT honour
   # the dlpack_ROOT that vision_pack_provide_header_only sets. Without this hint
@@ -261,7 +295,7 @@ if(VISION_PACK_ENABLE_ROCAL)
   # (TURBO_JPEG_PATH/LMDB_DIR/SndFile_ROOT) only feed those finders' low-
   # priority PATHS slot, which loses to the system prefix; the prefix path wins.
   set(_rocal_prefix_paths "")
-  if(VISION_PACK_BUNDLE_TURBOJPEG OR VISION_PACK_BUNDLE_LMDB OR VISION_PACK_BUNDLE_LIBSNDFILE)
+  if(VISION_PACK_BUNDLE_TURBOJPEG OR VISION_PACK_BUNDLE_LMDB OR VISION_PACK_BUNDLE_LIBSNDFILE OR VISION_PACK_BUNDLE_FFMPEG)
     list(APPEND _rocal_prefix_paths "${_bstage}")
   endif()
 

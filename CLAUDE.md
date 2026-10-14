@@ -172,4 +172,4 @@ No rsync — use `scp` or write files via ssh heredoc.
 - rocAL + rocPyDecode install Python `.so`s to `lib/` not site-packages (rocAL#514, rocPyDecode#285).
 - rocPyDecode install() calls lack COMPONENT grouping (rocPyDecode#285).
 - rocpydecode hardcoded utils path + `Development.Embed` requirement (rocPyDecode#290).
-- rocAL WebDataset (libtar) and ffmpeg readers disabled by design to keep the tree self-contained.
+- rocAL WebDataset (libtar) reader disabled by design to keep the tree self-contained. FFmpeg is the shallow `third-party/ffmpeg` submodule, shipped as private `*-rocm-vision` SONAMEs.

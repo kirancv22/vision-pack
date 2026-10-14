@@ -48,6 +48,9 @@ SYSDEP_STEMS = [
     "lmdb",
     "sndfile",
 ]
+# FFmpeg is absent on purpose. third-party/ffmpeg is configured with
+# --build-suffix=-rocm-vision, so its SONAMEs are already private. Adding
+# avcodec/avformat/avutil/swscale here would look for the stock names.
 
 SUFFIX = "-rocm-vision"
 
